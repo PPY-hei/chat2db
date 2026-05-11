@@ -8,9 +8,30 @@ UI 参考了 VSCode 的树形结构与 Navicat 的表数据浏览，定位是**�
 - 账号之间不共用数据库账号，权限完全由**应用层 RBAC + SQL 解析器**控制，杜绝"Viewer 执行 DROP"这种越权。
 - 支持 AI 对话写 SQL，组 Owner 可共享自己的 LLM 配置给组内成员，无需每人一份 API Key。
 
+## 界面预览
+
+### 添加 PostgreSQL 连接
+
+每个连接归属一个组，密码会在落库前做 AES-GCM 加密；支持测试连接与多种 SSL 模式。
+
+![添加 PG 连接](docs/screenshots/add-pg-connection.jpg)
+
+### 连接组管理：成员 / 角色 / LLM 共享
+
+Owner 可邀请成员并指派 Owner / Editor / Viewer；Editor 可继续邀请 Viewer / Editor。Owner 还能一键打开 **AI 大模型配置共享**，让组员复用 Owner 的 LLM 凭据，无需每人配置一遍 API Key。
+
+![组设置](docs/screenshots/group-settings.jpg)
+
+### AI 写 SQL：`@` 引用表自动注入 DDL
+
+在 AI 对话框输入 `@` 可补全当前连接里的所有表；提交时后端会自动把被引用表的 DDL 作为上下文一并发给模型。返回的 SQL 可一键插入到光标位置。
+
+![AI 生成 SQL](docs/screenshots/ai-generate-sql.jpg)
+
 ## 目录
 
 - [Chat2DB Web](#chat2db-web)
+  - [界面预览](#界面预览)
   - [目录](#目录)
   - [功能总览](#功能总览)
   - [技术栈与架构](#技术栈与架构)
