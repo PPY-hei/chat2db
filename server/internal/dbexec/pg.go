@@ -18,7 +18,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// poolEntry caches a pgxpool.Pool keyed by connection ID (+ updated_at).
+// poolKey uniquely identifies a connection pool by connID + database.
+type poolKey struct {
+	connID   uint
+	database string
+}
+
+// poolEntry caches a pgxpool.Pool keyed by poolKey (+ updated_at for staleness).
 type poolEntry struct {
 	pool    *pgxpool.Pool
 	version string
@@ -26,18 +32,13 @@ type poolEntry struct {
 
 var (
 	poolMu sync.Mutex
-	pools  = map[uint]*poolEntry{}
+	pools  = map[poolKey]*poolEntry{}
 )
 
 // dsnFor builds a pgx DSN from the model.Connection.
-// If SSH tunnel is enabled, host:port will be the local tunnel endpoint.
-func dsnFor(c *model.Connection) (string, error) {
+// host and port should already be resolved (e.g. via getSSHTunnel).
+func dsnFor(c *model.Connection, host string, port int) (string, error) {
 	pwd, err := service.DecryptPassword(c)
-	if err != nil {
-		return "", err
-	}
-
-	host, port, err := getSSHTunnel(c)
 	if err != nil {
 		return "", err
 	}
@@ -59,7 +60,6 @@ func dsnFor(c *model.Connection) (string, error) {
 }
 
 // buildTLSConfig creates a *tls.Config from the connection's SSL cert fields.
-// Returns nil if no certs are configured (pgx will use sslmode param only).
 func buildTLSConfig(c *model.Connection) (*tls.Config, error) {
 	key := config.Get().CredentialKey
 	hasCerts := c.SSLCACertEnc != "" || c.SSLClientCertEnc != "" || c.SSLClientKeyEnc != ""
@@ -105,8 +105,9 @@ func buildTLSConfig(c *model.Connection) (*tls.Config, error) {
 // getPool returns a cached pgxpool.Pool for the connection.
 func getPool(ctx context.Context, c *model.Connection) (*pgxpool.Pool, error) {
 	version := c.UpdatedAt.Format(time.RFC3339Nano)
+	key := poolKey{connID: c.ID, database: c.Database}
 	poolMu.Lock()
-	entry, ok := pools[c.ID]
+	entry, ok := pools[key]
 	if ok && entry.version == version {
 		p := entry.pool
 		poolMu.Unlock()
@@ -114,11 +115,17 @@ func getPool(ctx context.Context, c *model.Connection) (*pgxpool.Pool, error) {
 	}
 	if ok {
 		entry.pool.Close()
-		delete(pools, c.ID)
+		delete(pools, key)
 	}
 	poolMu.Unlock()
 
-	dsn, err := dsnFor(c)
+	// Resolve SSH tunnel once for both DSN and DialFunc
+	host, port, err := getSSHTunnel(c)
+	if err != nil {
+		return nil, err
+	}
+
+	dsn, err := dsnFor(c, host, port)
 	if err != nil {
 		return nil, err
 	}
@@ -139,13 +146,9 @@ func getPool(ctx context.Context, c *model.Connection) (*pgxpool.Pool, error) {
 		cfg.ConnConfig.TLSConfig = tlsCfg
 	}
 
-	// SSH 隧道需要自定义 DialFunc 连到本地隧道端口
+	// SSH 隧道需要自定义 DialFunc 让 pgx 直连本地隧道端口
 	if c.SSHEnabled {
-		tunnelHost, tunnelPort, err := getSSHTunnel(c)
-		if err != nil {
-			return nil, err
-		}
-		localAddr := fmt.Sprintf("%s:%d", tunnelHost, tunnelPort)
+		localAddr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 		cfg.ConnConfig.DialFunc = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return net.DialTimeout("tcp", localAddr, 10*time.Second)
 		}
@@ -160,14 +163,20 @@ func getPool(ctx context.Context, c *model.Connection) (*pgxpool.Pool, error) {
 		return nil, err
 	}
 	poolMu.Lock()
-	pools[c.ID] = &poolEntry{pool: p, version: version}
+	pools[key] = &poolEntry{pool: p, version: version}
 	poolMu.Unlock()
 	return p, nil
 }
 
-// Ping tests the connection without caching.
-func Ping(ctx context.Context, c *model.Connection) error {
-	dsn, err := dsnFor(c)
+// pgPing tests the PG connection without caching.
+func pgPing(ctx context.Context, c *model.Connection) error {
+	// Resolve SSH tunnel once
+	host, port, err := getSSHTunnel(c)
+	if err != nil {
+		return err
+	}
+
+	dsn, err := dsnFor(c, host, port)
 	if err != nil {
 		return err
 	}
@@ -183,11 +192,7 @@ func Ping(ctx context.Context, c *model.Connection) error {
 		cfg.TLSConfig = tlsCfg
 	}
 	if c.SSHEnabled {
-		tunnelHost, tunnelPort, err2 := getSSHTunnel(c)
-		if err2 != nil {
-			return err2
-		}
-		localAddr := fmt.Sprintf("%s:%d", tunnelHost, tunnelPort)
+		localAddr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 		cfg.DialFunc = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return net.DialTimeout("tcp", localAddr, 10*time.Second)
 		}
@@ -213,8 +218,8 @@ type QueryResult struct {
 	Extra        map[string]string `json:"extra,omitempty"`
 }
 
-// Exec runs one SQL statement and returns a result.
-func Exec(ctx context.Context, c *model.Connection, sql string, args ...any) (*QueryResult, error) {
+// pgExec runs one SQL statement on PG and returns a result.
+func pgExec(ctx context.Context, c *model.Connection, sql string, args ...any) (*QueryResult, error) {
 	appCfg := config.Get()
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(appCfg.QueryTimeoutSec)*time.Second)
 	defer cancel()
@@ -264,15 +269,17 @@ func Exec(ctx context.Context, c *model.Connection, sql string, args ...any) (*Q
 	return out, nil
 }
 
-// InvalidatePool should be called after a connection is updated or deleted.
-func InvalidatePool(connID uint) {
+// pgInvalidatePool closes and removes all cached PG pools for a connection
+// (including temporary pools created for different databases via WithDatabase).
+func pgInvalidatePool(connID uint) {
 	poolMu.Lock()
-	if e, ok := pools[connID]; ok {
-		e.pool.Close()
-		delete(pools, connID)
+	for key, e := range pools {
+		if key.connID == connID {
+			e.pool.Close()
+			delete(pools, key)
+		}
 	}
 	poolMu.Unlock()
-	invalidateSSHTunnel(connID)
 }
 
 // Rudimentary PG type OID mapping for the most common cases.

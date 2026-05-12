@@ -88,30 +88,37 @@ function isNumericLike(dt: string | undefined): boolean {
 }
 
 function isBoolLike(dt: string | undefined): boolean {
-  return !!dt && dt.toLowerCase().startsWith("bool");
+  if (!dt) return false;
+  const s = dt.toLowerCase();
+  return s.startsWith("bool") || s === "tinyint(1)";
 }
 
-// SQL 字符串字面量：单引号转义
-function pgQuote(s: string): string {
+// SQL 字符串字面量转义
+function sqlQuote(s: string, mysql?: boolean): string {
+  if (mysql) {
+    // MySQL 默认 backslash 是转义字符，需要同时转义 \ 和 '
+    return "'" + s.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+  }
+  // PostgreSQL standard_conforming_strings=on，只需双写单引号
   return "'" + s.replace(/'/g, "''") + "'";
 }
 
 // 把单个值按列类型生成字面量
-function literalFor(value: string, dt: string | undefined): string {
+function literalFor(value: string, dt: string | undefined, mysql?: boolean): string {
   const v = value.trim();
   if (isBoolLike(dt)) {
     const lv = v.toLowerCase();
     if (lv === "true" || lv === "t" || lv === "1") return "TRUE";
     if (lv === "false" || lv === "f" || lv === "0") return "FALSE";
-    return pgQuote(v);
+    return sqlQuote(v, mysql);
   }
   if (isNumericLike(dt) && /^-?\d+(\.\d+)?$/.test(v)) return v;
-  return pgQuote(v);
+  return sqlQuote(v, mysql);
 }
 
 // 将一个筛选条件转成 SQL 片段
-function buildWhereClause(cond: FilterCond, colMeta: ColumnInfo | undefined): string | null {
-  const col = `"${cond.column}"`;
+function buildWhereClause(cond: FilterCond, colMeta: ColumnInfo | undefined, quoteFn: (s: string) => string, mysql?: boolean): string | null {
+  const col = quoteFn(cond.column);
   const dt = colMeta?.data_type;
   switch (cond.op) {
     case "IS NULL":
@@ -125,25 +132,36 @@ function buildWhereClause(cond: FilterCond, colMeta: ColumnInfo | undefined): st
         .map((x) => x.trim())
         .filter(Boolean);
       if (parts.length === 0) return null;
-      const list = parts.map((p) => literalFor(p, dt)).join(", ");
+      const list = parts.map((p) => literalFor(p, dt, mysql)).join(", ");
       return `${col} ${cond.op} (${list})`;
     }
     case "LIKE":
     case "NOT LIKE":
       if (!cond.value) return null;
-      return `${col} ${cond.op} ${pgQuote(cond.value)}`;
+      return `${col} ${cond.op} ${sqlQuote(cond.value, mysql)}`;
     case "contains":
-      // 把列统一转为 text 再用 ILIKE 做大小写不敏感的包含匹配，值自动加 %...% 包裹
+      // 大小写不敏感的包含匹配
       if (!cond.value) return null;
-      return `${col}::text ILIKE ${pgQuote("%" + cond.value + "%")}`;
+      if (mysql) {
+        return `${col} LIKE ${sqlQuote("%" + cond.value + "%", true)}`;
+      }
+      return `${col}::text ILIKE ${sqlQuote("%" + cond.value + "%")}`;
     default:
       if (cond.value === "") return null;
-      return `${col} ${cond.op} ${literalFor(cond.value, dt)}`;
+      return `${col} ${cond.op} ${literalFor(cond.value, dt, mysql)}`;
   }
 }
 
 export default function TableDataTab({ tab, onOpenSQL }: Props) {
   const { message } = App.useApp();
+  const isMySQL = tab.driver === "mysql";
+  // SQL 标识符引用：PG 用双引号，MySQL 用反引号
+  const q = (name: string) => (isMySQL ? `\`${name}\`` : `"${name}"`);
+  // 完整表名引用
+  const fullTable = isMySQL
+    ? (tab.database ? `\`${tab.database}\`.\`${tab.table}\`` : `\`${tab.table}\``)
+    : `"${tab.schema}"."${tab.table}"`;
+
   const [columns, setColumns] = useState<ColumnInfo[]>([]);
   const [data, setData] = useState<ExecuteResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -172,13 +190,13 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
     const where: string[] = [];
     for (const f of filtersToUse) {
       const meta = columns.find((c) => c.name === f.column);
-      const clause = buildWhereClause(f, meta);
+      const clause = buildWhereClause(f, meta, q, isMySQL);
       if (clause) where.push(clause);
     }
     if (where.length > 0) parts.push("WHERE " + where.join(" AND "));
     if (sortColumn && sortDir) {
-      parts.push(`ORDER BY "${sortColumn}" ${sortDir === "asc" ? "ASC" : "DESC"}`);
-    } else {
+      parts.push(`ORDER BY ${q(sortColumn)} ${sortDir === "asc" ? "ASC" : "DESC"}`);
+    } else if (!isMySQL) {
       parts.push("ORDER BY ctid");
     }
     if (withLimit) {
@@ -197,14 +215,18 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
     setLoading(true);
     try {
       const suffix = buildSuffix(filtersToUse, true, nextPage, nextPageSize);
-      const sql = `SELECT * FROM "${tab.schema}"."${tab.table}" ${suffix}`;
-      const fallback = sql.replace(/ORDER BY ctid/, "");
+      const sql = `SELECT * FROM ${fullTable} ${suffix}`;
       let res: ExecuteResponse;
-      try {
+      if (isMySQL) {
         res = await api.execute(tab.connID, sql, tab.database);
-        if (res.error) throw new Error(res.error);
-      } catch {
-        res = await api.execute(tab.connID, fallback, tab.database);
+      } else {
+        const fallback = sql.replace(/ORDER BY ctid/, "");
+        try {
+          res = await api.execute(tab.connID, sql, tab.database);
+          if (res.error) throw new Error(res.error);
+        } catch {
+          res = await api.execute(tab.connID, fallback, tab.database);
+        }
       }
       setData(res);
     } catch (e: any) {
@@ -220,13 +242,13 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
       const whereParts: string[] = [];
       for (const f of filtersToUse) {
         const meta = columns.find((c) => c.name === f.column);
-        const clause = buildWhereClause(f, meta);
+        const clause = buildWhereClause(f, meta, q, isMySQL);
         if (clause) whereParts.push(clause);
       }
       const whereSQL = whereParts.length ? " WHERE " + whereParts.join(" AND ") : "";
       const cntRes = await api.execute(
         tab.connID,
-        `SELECT COUNT(*) FROM "${tab.schema}"."${tab.table}"${whereSQL}`,
+        `SELECT COUNT(*) FROM ${fullTable}${whereSQL}`,
         tab.database
       );
       const v = cntRes.results?.[0]?.rows?.[0]?.[0];
@@ -371,9 +393,9 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
       for (const [col, val] of colChanges) {
         const meta = columns.find((c) => c.name === col);
         if (val === "") {
-          setParts.push(`"${col}" = NULL`);
+          setParts.push(`${q(col)} = NULL`);
         } else {
-          setParts.push(`"${col}" = ${literalFor(val, meta?.data_type)}`);
+          setParts.push(`${q(col)} = ${literalFor(val, meta?.data_type, isMySQL)}`);
         }
       }
       const whereParts: string[] = [];
@@ -383,13 +405,13 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
         const pkVal = row[pkIdx];
         const pkMeta = columns.find((c) => c.name === pk);
         if (pkVal === null || pkVal === undefined) {
-          whereParts.push(`"${pk}" IS NULL`);
+          whereParts.push(`${q(pk)} IS NULL`);
         } else {
-          whereParts.push(`"${pk}" = ${literalFor(String(pkVal), pkMeta?.data_type)}`);
+          whereParts.push(`${q(pk)} = ${literalFor(String(pkVal), pkMeta?.data_type, isMySQL)}`);
         }
       }
       stmts.push(
-        `UPDATE "${tab.schema}"."${tab.table}" SET ${setParts.join(", ")} WHERE ${whereParts.join(" AND ")};`
+        `UPDATE ${fullTable} SET ${setParts.join(", ")} WHERE ${whereParts.join(" AND ")};`
       );
     }
     return stmts;
@@ -500,24 +522,28 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
       const whereParts: string[] = [];
       for (const f of filtersToUse) {
         const meta = columns.find((c) => c.name === f.column);
-        const clause = buildWhereClause(f, meta);
+        const clause = buildWhereClause(f, meta, q, isMySQL);
         if (clause) whereParts.push(clause);
       }
       if (whereParts.length > 0) parts.push("WHERE " + whereParts.join(" AND "));
       if (nextCol && nextDir) {
-        parts.push(`ORDER BY "${nextCol}" ${nextDir === "asc" ? "ASC" : "DESC"}`);
-      } else {
+        parts.push(`ORDER BY ${q(nextCol)} ${nextDir === "asc" ? "ASC" : "DESC"}`);
+      } else if (!isMySQL) {
         parts.push("ORDER BY ctid");
       }
       parts.push(`LIMIT ${pageSize} OFFSET 0`);
-      const sql = `SELECT * FROM "${tab.schema}"."${tab.table}" ${parts.join(" ")}`;
-      const fallback = sql.replace(/ORDER BY ctid/, "");
+      const sql = `SELECT * FROM ${fullTable} ${parts.join(" ")}`;
       let res: ExecuteResponse;
-      try {
+      if (isMySQL) {
         res = await api.execute(tab.connID, sql, tab.database);
-        if (res.error) throw new Error(res.error);
-      } catch {
-        res = await api.execute(tab.connID, fallback, tab.database);
+      } else {
+        const fallback = sql.replace(/ORDER BY ctid/, "");
+        try {
+          res = await api.execute(tab.connID, sql, tab.database);
+          if (res.error) throw new Error(res.error);
+        } catch {
+          res = await api.execute(tab.connID, fallback, tab.database);
+        }
       }
       setData(res);
     } catch (e: any) {
@@ -777,7 +803,7 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
               icon={<FileSearchOutlined />}
               onClick={() =>
                 onOpenSQL(
-                  `SELECT * FROM "${tab.schema}"."${tab.table}" ${buildSuffix(
+                  `SELECT * FROM ${fullTable} ${buildSuffix(
                     appliedFilters,
                     true
                   )};`

@@ -37,7 +37,8 @@ interface Props {
 export default function SQLTab({ tab }: Props) {
   const { message } = App.useApp();
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
-  const [sql, setSQL] = useState<string>(tab.initialSQL ?? "-- Write SQL here\nSELECT now();\n");
+  const defaultSQL = tab.driver === "mysql" ? "-- Write SQL here\nSELECT NOW();\n" : "-- Write SQL here\nSELECT now();\n";
+  const [sql, setSQL] = useState<string>(tab.initialSQL ?? defaultSQL);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ExecuteResponse | null>(null);
   const [aiOpen, setAIOpen] = useState(false);
@@ -274,7 +275,7 @@ export default function SQLTab({ tab }: Props) {
       const tableDDL = await resolveMentions(aiPrompt);
       const resp = await api.aiChat({
         prompt: aiPrompt,
-        dialect: "postgres",
+        dialect: tab.driver === "mysql" ? "mysql" : "postgres",
         selection,
         table_ddl: tableDDL || undefined,
       });
@@ -434,7 +435,7 @@ export default function SQLTab({ tab }: Props) {
         {!aiResp ? (
           <>
             <Typography.Paragraph type="secondary">
-              输入 <span className="kbd">@</span> 可引用当前连接里的表，提交时会自动把该表的 DDL 一并发给模型。你选中的 SQL 片段也会作为上下文发送。当前方言：postgres。
+              输入 <span className="kbd">@</span> 可引用当前连接里的表，提交时会自动把该表的 DDL 一并发给模型。你选中的 SQL 片段也会作为上下文发送。当前方言：{tab.driver === "mysql" ? "mysql" : "postgres"}。
               {indexLoading && <span style={{ marginLeft: 8, color: "#1677ff" }}>表索引加载中…</span>}
             </Typography.Paragraph>
             <Mentions

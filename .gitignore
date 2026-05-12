@@ -14,7 +14,8 @@ web/vite.config.d.ts
 .env
 .env.local
 *.local
-
+.claude
+.opencode
 # OS / Editor
 .DS_Store
 Thumbs.db

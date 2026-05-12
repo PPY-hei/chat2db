@@ -49,14 +49,19 @@ func CreateConnection(actorID, groupID uint, in ConnectionInput) (*model.Connect
 	if in.Driver == "" {
 		in.Driver = "postgres"
 	}
-	if in.Driver != "postgres" {
-		return nil, errors.New("only postgres is supported for now")
+	if in.Driver != "postgres" && in.Driver != "mysql" {
+		return nil, errors.New("only postgres and mysql are supported")
 	}
 	if in.Name == "" || in.Host == "" || in.Database == "" || in.Username == "" {
 		return nil, errors.New("name, host, database, username are required")
 	}
 	if in.Port == 0 {
-		in.Port = 5432
+		switch in.Driver {
+		case "postgres":
+			in.Port = 5432
+		case "mysql":
+			in.Port = 3306
+		}
 	}
 	if in.SSLMode == "" {
 		in.SSLMode = "disable"

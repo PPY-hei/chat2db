@@ -66,6 +66,7 @@ export interface OpenedTab {
   connID: number;
   connName: string;
   role: Role;
+  driver?: string;
   database?: string;
   schema?: string;
   table?: string;
@@ -347,6 +348,7 @@ export default function MainLayout() {
       connID: conn.id,
       connName: conn.name,
       role,
+      driver: conn.driver,
       database: db,
       initialSQL,
     };
@@ -368,6 +370,7 @@ export default function MainLayout() {
           connID: conn.id,
           connName: conn.name,
           role,
+          driver: conn.driver,
           database: db,
           schema,
           table,

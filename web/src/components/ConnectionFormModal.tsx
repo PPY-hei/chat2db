@@ -44,6 +44,9 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
   const [sshEnabled, setSSHEnabled] = useState(false);
   const [sshAuthMethod, setSSHAuthMethod] = useState<string>("password");
   const [sslMode, setSSLMode] = useState<string>("disable");
+  const [driver, setDriver] = useState<string>("postgres");
+  // 记住 PG 的 sslMode，切到 MySQL 再切回时恢复
+  const [pgSSLMode, setPgSSLMode] = useState<string>("disable");
 
   useEffect(() => {
     if (!open) return;
@@ -65,6 +68,7 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
       setSSHEnabled(!!editing.ssh_enabled);
       setSSHAuthMethod(editing.ssh_auth_method || "password");
       setSSLMode(editing.ssl_mode || "disable");
+      setDriver(editing.driver || "postgres");
     } else {
       form.resetFields();
       form.setFieldsValue({
@@ -78,6 +82,7 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
       setSSHEnabled(false);
       setSSHAuthMethod("password");
       setSSLMode("disable");
+      setDriver("postgres");
     }
   }, [open, editing, form]);
 
@@ -183,7 +188,30 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
         </Form.Item>
         <Space.Compact block>
           <Form.Item name="driver" label="驱动" style={{ width: "30%" }} rules={[{ required: true }]}>
-            <Select options={[{ label: "PostgreSQL", value: "postgres" }]} disabled />
+            <Select
+              options={[
+                { label: "PostgreSQL", value: "postgres" },
+                { label: "MySQL", value: "mysql" },
+              ]}
+              onChange={(v: string) => {
+                const prevDriver = driver;
+                setDriver(v);
+                const defaultPort = v === "mysql" ? 3306 : 5432;
+                form.setFieldsValue({ port: defaultPort });
+                if (v === "mysql") {
+                  // 保存当前 PG 的 sslMode，切到 MySQL 时强制 disable
+                  if (prevDriver === "postgres") {
+                    setPgSSLMode(sslMode);
+                  }
+                  form.setFieldsValue({ ssl_mode: "disable" });
+                  setSSLMode("disable");
+                } else if (v === "postgres" && prevDriver === "mysql") {
+                  // 切回 PG 时恢复之前的 sslMode
+                  form.setFieldsValue({ ssl_mode: pgSSLMode });
+                  setSSLMode(pgSSLMode);
+                }
+              }}
+            />
           </Form.Item>
           <Form.Item name="host" label="主机" style={{ width: "50%" }} rules={[{ required: true }]}>
             <Input placeholder="localhost 或 远程 IP" />
@@ -198,10 +226,18 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
           </Form.Item>
           <Form.Item name="ssl_mode" label="SSL 模式" style={{ width: "50%" }}>
             <Select
-              options={["disable", "allow", "prefer", "require", "verify-ca", "verify-full"].map((s) => ({
-                label: s,
-                value: s,
-              }))}
+              options={
+                driver === "mysql"
+                  ? [
+                      { label: "disable", value: "disable" },
+                      { label: "require (skip-verify)", value: "require" },
+                      { label: "verify-ca", value: "verify-ca" },
+                    ]
+                  : ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"].map((s) => ({
+                      label: s,
+                      value: s,
+                    }))
+              }
               onChange={(v) => setSSLMode(v)}
             />
           </Form.Item>
