@@ -33,7 +33,7 @@ Owner 可邀请成员并指派 Owner / Editor / Viewer；Editor 可继续邀请 
 
 左侧树按 连接组 → 连接 → 数据库 → Schema → 表/视图 懒加载展开；右侧 Tab 支持分页、列头三态排序、真实 COUNT、查看 DDL、在 SQL 窗口打开，以及单元格内联编辑（带权限校验，主键感知 UPDATE 生成）。
 
-![表数据](docs/screenshots/tables.jpg)
+![表数据](docs/screenshots/tables.jpg?v=2)
 
 ### 多条件筛选：contains / IN / IS NULL / bool 下拉
 
