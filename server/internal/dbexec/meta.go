@@ -13,6 +13,61 @@ type Schema struct {
 	Name string `json:"name"`
 }
 
+// DatabaseInfo represents a database on the PG instance.
+type DatabaseInfo struct {
+	Name    string `json:"name"`
+	Owner   string `json:"owner"`
+	Current bool   `json:"current"` // 是否是连接配置里的默认数据库
+}
+
+// ListDatabases 列出当前 PG 实例上的所有非模板数据库。
+func ListDatabases(ctx context.Context, c *model.Connection) ([]DatabaseInfo, error) {
+	res, err := Exec(ctx, c, `SELECT datname, pg_catalog.pg_get_userbyid(datdba) AS owner
+FROM pg_catalog.pg_database
+WHERE datistemplate = false
+ORDER BY datname`)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DatabaseInfo, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		if len(r) < 2 {
+			continue
+		}
+		name := asString(r[0])
+		owner := asString(r[1])
+		out = append(out, DatabaseInfo{
+			Name:    name,
+			Owner:   owner,
+			Current: name == c.Database,
+		})
+	}
+	return out, nil
+}
+
+// WithDatabase 返回一个 connection 的浅拷贝，Database 字段被替换为指定值。
+// 用于临时切换数据库浏览，不会修改持久化的连接配置。
+// 同时重置 ID 为 0 避免污染连接池缓存（每个 database 会有独立的临时池）。
+func WithDatabase(c *model.Connection, database string) *model.Connection {
+	if database == "" || database == c.Database {
+		return c
+	}
+	cp := *c
+	cp.Database = database
+	// 用一个基于 connID + database 的虚拟 ID，让池管理器区分不同 database 的池
+	// 使用高位 ID 避免跟真实连接 ID 冲突（connID * 100000 + hash）
+	cp.ID = c.ID*100000 + uint(hashStr(database))
+	return &cp
+}
+
+func hashStr(s string) uint32 {
+	var h uint32
+	for _, c := range s {
+		h = h*31 + uint32(c)
+	}
+	return h % 99999
+}
+
 // TableInfo represents a table or view.
 type TableInfo struct {
 	Schema string `json:"schema"`

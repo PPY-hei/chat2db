@@ -46,6 +46,7 @@ func RegisterRoutes(r *gin.Engine) {
 		authed.POST("/connections/test", TestConnection)
 
 		// schema browsing & execution
+		authed.GET("/connections/:connID/databases", ListDatabases)
 		authed.GET("/connections/:connID/schemas", ListSchemas)
 		authed.GET("/connections/:connID/tables", ListTables)
 		authed.GET("/connections/:connID/columns", ListColumns)

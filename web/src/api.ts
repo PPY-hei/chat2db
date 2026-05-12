@@ -84,22 +84,41 @@ export const api = {
     http.post<{ ok: boolean; error?: string }>("/connections/test", payload).then((r) => r.data),
 
   // db browsing & execution
-  listSchemas: (connID: number) =>
-    http.get<SchemaInfo[]>(`/connections/${connID}/schemas`).then((r) => r.data),
-  listTables: (connID: number, schema: string) =>
-    http.get<TableInfo[]>(`/connections/${connID}/tables`, { params: { schema } }).then((r) => r.data),
-  listColumns: (connID: number, schema: string, table: string) =>
+  listDatabases: (connID: number) =>
     http
-      .get<ColumnInfo[]>(`/connections/${connID}/columns`, { params: { schema, table } })
+      .get<Array<{ name: string; owner: string; current: boolean }>>(`/connections/${connID}/databases`)
       .then((r) => r.data),
-  getTableDDL: (connID: number, schema: string, table: string) =>
+  listSchemas: (connID: number, database?: string) =>
     http
-      .get<{ schema: string; table: string; ddl: string }>(`/connections/${connID}/ddl`, {
-        params: { schema, table },
+      .get<SchemaInfo[]>(`/connections/${connID}/schemas`, {
+        params: database ? { database } : {},
       })
       .then((r) => r.data),
-  execute: (connID: number, sql: string) =>
-    http.post<ExecuteResponse>(`/connections/${connID}/execute`, { sql }).then((r) => r.data),
+  listTables: (connID: number, schema: string, database?: string) =>
+    http
+      .get<TableInfo[]>(`/connections/${connID}/tables`, {
+        params: { schema, ...(database ? { database } : {}) },
+      })
+      .then((r) => r.data),
+  listColumns: (connID: number, schema: string, table: string, database?: string) =>
+    http
+      .get<ColumnInfo[]>(`/connections/${connID}/columns`, {
+        params: { schema, table, ...(database ? { database } : {}) },
+      })
+      .then((r) => r.data),
+  getTableDDL: (connID: number, schema: string, table: string, database?: string) =>
+    http
+      .get<{ schema: string; table: string; ddl: string }>(`/connections/${connID}/ddl`, {
+        params: { schema, table, ...(database ? { database } : {}) },
+      })
+      .then((r) => r.data),
+  execute: (connID: number, sql: string, database?: string) =>
+    http
+      .post<ExecuteResponse>(
+        `/connections/${connID}/execute${database ? `?database=${encodeURIComponent(database)}` : ""}`,
+        { sql }
+      )
+      .then((r) => r.data),
 
   // saved queries
   listGroupSavedQueries: (groupID: number) =>

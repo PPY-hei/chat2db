@@ -295,7 +295,7 @@ func DeleteConnection(c *gin.Context) {
 }
 
 type testConnReq struct {
-	ConnectionID uint                    `json:"connection_id,omitempty"`
+	ConnectionID uint                     `json:"connection_id,omitempty"`
 	Draft        *service.ConnectionInput `json:"draft,omitempty"`
 }
 
@@ -395,7 +395,24 @@ func TestConnection(c *gin.Context) {
 
 // --- db operations ---
 
-func ListSchemas(c *gin.Context) {
+// resolveConn 获取连接并根据可选的 ?database= 参数临时切换数据库。
+func resolveConn(c *gin.Context) (*model.Connection, model.Role, error) {
+	uid := middleware.CurrentUserID(c)
+	id, err := uintParam(c, "connID")
+	if err != nil {
+		return nil, "", err
+	}
+	conn, role, err := service.GetConnection(uid, id)
+	if err != nil {
+		return nil, "", err
+	}
+	if db := c.Query("database"); db != "" {
+		conn = dbexec.WithDatabase(conn, db)
+	}
+	return conn, role, nil
+}
+
+func ListDatabases(c *gin.Context) {
 	uid := middleware.CurrentUserID(c)
 	id, err := uintParam(c, "connID")
 	if err != nil {
@@ -403,6 +420,20 @@ func ListSchemas(c *gin.Context) {
 		return
 	}
 	conn, _, err := service.GetConnection(uid, id)
+	if err != nil {
+		forbidden(c, err)
+		return
+	}
+	rows, err := dbexec.ListDatabases(c.Request.Context(), conn)
+	if err != nil {
+		internal(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, rows)
+}
+
+func ListSchemas(c *gin.Context) {
+	conn, _, err := resolveConn(c)
 	if err != nil {
 		forbidden(c, err)
 		return
@@ -416,20 +447,14 @@ func ListSchemas(c *gin.Context) {
 }
 
 func ListTables(c *gin.Context) {
-	uid := middleware.CurrentUserID(c)
-	id, err := uintParam(c, "connID")
+	conn, _, err := resolveConn(c)
 	if err != nil {
-		badRequest(c, err)
+		forbidden(c, err)
 		return
 	}
 	schema := c.Query("schema")
 	if schema == "" {
 		badRequest(c, errors.New("schema is required"))
-		return
-	}
-	conn, _, err := service.GetConnection(uid, id)
-	if err != nil {
-		forbidden(c, err)
 		return
 	}
 	rows, err := dbexec.ListTables(c.Request.Context(), conn, schema)
@@ -441,21 +466,15 @@ func ListTables(c *gin.Context) {
 }
 
 func ListColumns(c *gin.Context) {
-	uid := middleware.CurrentUserID(c)
-	id, err := uintParam(c, "connID")
+	conn, _, err := resolveConn(c)
 	if err != nil {
-		badRequest(c, err)
+		forbidden(c, err)
 		return
 	}
 	schema := c.Query("schema")
 	table := c.Query("table")
 	if schema == "" || table == "" {
 		badRequest(c, errors.New("schema and table are required"))
-		return
-	}
-	conn, _, err := service.GetConnection(uid, id)
-	if err != nil {
-		forbidden(c, err)
 		return
 	}
 	rows, err := dbexec.ListColumns(c.Request.Context(), conn, schema, table)
@@ -468,21 +487,15 @@ func ListColumns(c *gin.Context) {
 
 // TableDDL 返回给定表的可读 DDL（含列/主键/索引/注释），供前端查看和 AI 上下文。
 func TableDDL(c *gin.Context) {
-	uid := middleware.CurrentUserID(c)
-	id, err := uintParam(c, "connID")
+	conn, _, err := resolveConn(c)
 	if err != nil {
-		badRequest(c, err)
+		forbidden(c, err)
 		return
 	}
 	schema := c.Query("schema")
 	table := c.Query("table")
 	if schema == "" || table == "" {
 		badRequest(c, errors.New("schema and table are required"))
-		return
-	}
-	conn, _, err := service.GetConnection(uid, id)
-	if err != nil {
-		forbidden(c, err)
 		return
 	}
 	ddl, err := dbexec.GenerateTableDDL(c.Request.Context(), conn, schema, table)
@@ -498,20 +511,14 @@ type executeReq struct {
 }
 
 func ExecuteSQL(c *gin.Context) {
-	uid := middleware.CurrentUserID(c)
-	id, err := uintParam(c, "connID")
+	conn, role, err := resolveConn(c)
 	if err != nil {
-		badRequest(c, err)
+		forbidden(c, err)
 		return
 	}
 	var in executeReq
 	if err := c.ShouldBindJSON(&in); err != nil {
 		badRequest(c, err)
-		return
-	}
-	conn, role, err := service.GetConnection(uid, id)
-	if err != nil {
-		forbidden(c, err)
 		return
 	}
 	if err := sqlguard.CheckAllowed(in.SQL, role); err != nil {
