@@ -42,9 +42,10 @@ import SQLTab from "../components/SQLTab";
 import TableDataTab from "../components/TableDataTab";
 
 interface TreeKey {
-  type: "group" | "connection" | "schema" | "table";
+  type: "group" | "connection" | "database" | "schema" | "table";
   groupID?: number;
   connID?: number;
+  database?: string;
   schema?: string;
   table?: string;
   kind?: string;
@@ -65,6 +66,7 @@ export interface OpenedTab {
   connID: number;
   connName: string;
   role: Role;
+  database?: string;
   schema?: string;
   table?: string;
   initialSQL?: string;
@@ -77,7 +79,8 @@ export default function MainLayout() {
 
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupConns, setGroupConns] = useState<Record<number, Connection[]>>({});
-  const [schemasMap, setSchemasMap] = useState<Record<number, string[]>>({});
+  const [databasesMap, setDatabasesMap] = useState<Record<number, string[]>>({});
+  const [schemasMap, setSchemasMap] = useState<Record<string, string[]>>({});
   const [tablesMap, setTablesMap] = useState<Record<string, TableInfo[]>>({});
   const [expanded, setExpanded] = useState<string[]>([]);
   const [loadingNode, setLoadingNode] = useState<string | null>(null);
@@ -149,14 +152,19 @@ export default function MainLayout() {
     setGroupConns((m) => ({ ...m, [groupID]: cs }));
   };
 
-  const loadSchemas = async (connID: number) => {
-    const ss = await api.listSchemas(connID);
-    setSchemasMap((m) => ({ ...m, [connID]: ss.map((s) => s.name) }));
+  const loadDatabases = async (connID: number) => {
+    const dbs = await api.listDatabases(connID);
+    setDatabasesMap((m) => ({ ...m, [connID]: dbs.map((d) => d.name) }));
   };
 
-  const loadTables = async (connID: number, schema: string) => {
-    const ts = await api.listTables(connID, schema);
-    setTablesMap((m) => ({ ...m, [`${connID}/${schema}`]: ts }));
+  const loadSchemas = async (connID: number, database: string) => {
+    const ss = await api.listSchemas(connID, database);
+    setSchemasMap((m) => ({ ...m, [`${connID}/${database}`]: ss.map((s) => s.name) }));
+  };
+
+  const loadTables = async (connID: number, database: string, schema: string) => {
+    const ts = await api.listTables(connID, schema, database);
+    setTablesMap((m) => ({ ...m, [`${connID}/${database}/${schema}`]: ts }));
   };
 
   const treeData: DataNode[] = useMemo(() => {
@@ -168,27 +176,33 @@ export default function MainLayout() {
         key: encodeKey({ type: "connection", groupID: g.id, connID: c.id }),
         title: c.name,
         icon: <DatabaseOutlined style={{ color: "#2563eb" }} />,
-        children: (schemasMap[c.id] ?? []).map<DataNode>((s) => ({
-          key: encodeKey({ type: "schema", groupID: g.id, connID: c.id, schema: s }),
-          title: s,
-          icon: <PartitionOutlined className="tree-icon-schema" />,
-          children: (tablesMap[`${c.id}/${s}`] ?? []).map<DataNode>((t) => ({
-            key: encodeKey({
-              type: "table",
-              groupID: g.id,
-              connID: c.id,
-              schema: s,
-              table: t.name,
-              kind: t.kind,
-            }),
-            title: t.name,
-            icon: t.kind === "table" ? <TableOutlined className="tree-icon-table" /> : <EyeOutlined className="tree-icon-view" />,
-            isLeaf: true,
+        children: (databasesMap[c.id] ?? []).map<DataNode>((db) => ({
+          key: encodeKey({ type: "database", groupID: g.id, connID: c.id, database: db }),
+          title: db,
+          icon: <DatabaseOutlined style={{ color: db === c.database ? "#16a34a" : "#6b7280" }} />,
+          children: (schemasMap[`${c.id}/${db}`] ?? []).map<DataNode>((s) => ({
+            key: encodeKey({ type: "schema", groupID: g.id, connID: c.id, database: db, schema: s }),
+            title: s,
+            icon: <PartitionOutlined className="tree-icon-schema" />,
+            children: (tablesMap[`${c.id}/${db}/${s}`] ?? []).map<DataNode>((t) => ({
+              key: encodeKey({
+                type: "table",
+                groupID: g.id,
+                connID: c.id,
+                database: db,
+                schema: s,
+                table: t.name,
+                kind: t.kind,
+              }),
+              title: t.name,
+              icon: t.kind === "table" ? <TableOutlined className="tree-icon-table" /> : <EyeOutlined className="tree-icon-view" />,
+              isLeaf: true,
+            })),
           })),
         })),
       })),
     }));
-  }, [groups, groupConns, schemasMap, tablesMap]);
+  }, [groups, groupConns, databasesMap, schemasMap, tablesMap]);
 
   const titleRender = useCallback((node: any) => {
     const k: TreeKey = JSON.parse(node.key);
@@ -260,7 +274,7 @@ export default function MainLayout() {
             </Tooltip>
             {(() => {
               const items: any[] = [
-                { key: "refresh", label: "刷新 Schema" },
+                { key: "refresh", label: "刷新数据库列表" },
               ];
               if (g.role === "owner") {
                 items.push(
@@ -309,10 +323,12 @@ export default function MainLayout() {
     try {
       if (k.type === "group" && k.groupID && !groupConns[k.groupID]) {
         await loadConnections(k.groupID);
-      } else if (k.type === "connection" && k.connID && !schemasMap[k.connID]) {
-        await loadSchemas(k.connID);
-      } else if (k.type === "schema" && k.connID && k.schema && !tablesMap[`${k.connID}/${k.schema}`]) {
-        await loadTables(k.connID, k.schema);
+      } else if (k.type === "connection" && k.connID && !databasesMap[k.connID]) {
+        await loadDatabases(k.connID);
+      } else if (k.type === "database" && k.connID && k.database && !schemasMap[`${k.connID}/${k.database}`]) {
+        await loadSchemas(k.connID, k.database);
+      } else if (k.type === "schema" && k.connID && k.database && k.schema && !tablesMap[`${k.connID}/${k.database}/${k.schema}`]) {
+        await loadTables(k.connID, k.database, k.schema);
       }
     } catch (e: any) {
       message.error(e?.response?.data?.error ?? "加载失败");
@@ -321,34 +337,38 @@ export default function MainLayout() {
     }
   }, [groupConns, schemasMap, tablesMap, message]);
 
-  const openSQLTab = useCallback((conn: Connection, role: Role, initialSQL?: string) => {
+  const openSQLTab = useCallback((conn: Connection, role: Role, initialSQL?: string, database?: string) => {
     const key = `sql-${conn.id}-${Date.now()}`;
+    const db = database || conn.database;
     const tab: OpenedTab = {
       key,
-      title: `SQL · ${conn.name}`,
+      title: `SQL · ${conn.name}/${db}`,
       type: "sql",
       connID: conn.id,
       connName: conn.name,
       role,
+      database: db,
       initialSQL,
     };
     setTabs((ts) => [...ts, tab]);
     setActiveTab(key);
   }, []);
 
-  const openTableTab = useCallback((conn: Connection, role: Role, schema: string, table: string) => {
-    const key = `tbl-${conn.id}-${schema}-${table}`;
+  const openTableTab = useCallback((conn: Connection, role: Role, schema: string, table: string, database?: string) => {
+    const db = database || conn.database;
+    const key = `tbl-${conn.id}-${db}-${schema}-${table}`;
     setTabs((ts) => {
       if (ts.some((t) => t.key === key)) return ts;
       return [
         ...ts,
         {
           key,
-          title: `${schema}.${table}`,
+          title: `${db}/${schema}.${table}`,
           type: "table",
           connID: conn.id,
           connName: conn.name,
           role,
+          database: db,
           schema,
           table,
         },
@@ -364,22 +384,33 @@ export default function MainLayout() {
       const group = groups.find((g) => g.id === k.groupID);
       const conn = (groupConns[k.groupID!] ?? []).find((c) => c.id === k.connID);
       if (!group || !conn) return;
-      openTableTab(conn, group.role, k.schema, k.table);
+      openTableTab(conn, group.role, k.schema, k.table, k.database);
     } else if (k.type === "connection" && k.connID) {
       const group = groups.find((g) => g.id === k.groupID);
       const conn = (groupConns[k.groupID!] ?? []).find((c) => c.id === k.connID);
       if (group && conn) openSQLTab(conn, group.role);
+    } else if (k.type === "database" && k.connID && k.database) {
+      const group = groups.find((g) => g.id === k.groupID);
+      const conn = (groupConns[k.groupID!] ?? []).find((c) => c.id === k.connID);
+      if (group && conn) openSQLTab(conn, group.role, undefined, k.database);
     }
   }, [groups, groupConns, openTableTab, openSQLTab]);
 
   const onConnAction = useCallback((key: string, conn: Connection, group: Group) => {
     if (key === "edit") setConnModal({ open: true, groupID: group.id, editing: conn });
     if (key === "refresh") {
-      // 强制重新拉取该连接的 schema 列表，并清除对应的 tables 缓存
+      // 强制重新拉取该连接的数据库列表，并清除对应的 schemas/tables 缓存
       api
-        .listSchemas(conn.id)
-        .then((ss) => {
-          setSchemasMap((m) => ({ ...m, [conn.id]: ss.map((s) => s.name) }));
+        .listDatabases(conn.id)
+        .then((dbs) => {
+          setDatabasesMap((m) => ({ ...m, [conn.id]: dbs.map((d) => d.name) }));
+          setSchemasMap((m) => {
+            const next = { ...m };
+            for (const k of Object.keys(next)) {
+              if (k.startsWith(`${conn.id}/`)) delete next[k];
+            }
+            return next;
+          });
           setTablesMap((m) => {
             const next = { ...m };
             for (const k of Object.keys(next)) {
@@ -387,7 +418,7 @@ export default function MainLayout() {
             }
             return next;
           });
-          message.success(`已刷新 ${ss.length} 个 schema`);
+          message.success(`已刷新，共 ${dbs.length} 个数据库`);
         })
         .catch((e) => message.error(e?.response?.data?.error ?? "刷新失败"));
     }
@@ -405,9 +436,23 @@ export default function MainLayout() {
           await api.deleteConnection(conn.id);
           message.success("已删除");
           await loadConnections(group.id);
-          setSchemasMap((m) => {
+          setDatabasesMap((m) => {
             const { [conn.id]: _, ...rest } = m;
             return rest;
+          });
+          setSchemasMap((m) => {
+            const next = { ...m };
+            for (const k of Object.keys(next)) {
+              if (k.startsWith(`${conn.id}/`)) delete next[k];
+            }
+            return next;
+          });
+          setTablesMap((m) => {
+            const next = { ...m };
+            for (const k of Object.keys(next)) {
+              if (k.startsWith(`${conn.id}/`)) delete next[k];
+            }
+            return next;
           });
         },
       });
@@ -555,7 +600,7 @@ export default function MainLayout() {
                         tab={t}
                         onOpenSQL={(sql) => {
                           const found = findConnAndGroup(t.connID);
-                          if (found) openSQLTab(found.conn, found.group.role, sql);
+                          if (found) openSQLTab(found.conn, found.group.role, sql, t.database);
                         }}
                       />
                     )}

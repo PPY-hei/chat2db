@@ -201,10 +201,10 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
       const fallback = sql.replace(/ORDER BY ctid/, "");
       let res: ExecuteResponse;
       try {
-        res = await api.execute(tab.connID, sql);
+        res = await api.execute(tab.connID, sql, tab.database);
         if (res.error) throw new Error(res.error);
       } catch {
-        res = await api.execute(tab.connID, fallback);
+        res = await api.execute(tab.connID, fallback, tab.database);
       }
       setData(res);
     } catch (e: any) {
@@ -226,7 +226,8 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
       const whereSQL = whereParts.length ? " WHERE " + whereParts.join(" AND ") : "";
       const cntRes = await api.execute(
         tab.connID,
-        `SELECT COUNT(*) FROM "${tab.schema}"."${tab.table}"${whereSQL}`
+        `SELECT COUNT(*) FROM "${tab.schema}"."${tab.table}"${whereSQL}`,
+        tab.database
       );
       const v = cntRes.results?.[0]?.rows?.[0]?.[0];
       if (v !== undefined && v !== null) setTotal(Number(v));
@@ -240,7 +241,7 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
     if (!tab.schema || !tab.table) return;
     setLoading(true);
     try {
-      const cols = await api.listColumns(tab.connID, tab.schema, tab.table);
+      const cols = await api.listColumns(tab.connID, tab.schema, tab.table, tab.database);
       setColumns(cols);
       await fetchPage(page, pageSize, appliedFilters);
       await fetchTotal(appliedFilters);
@@ -257,7 +258,7 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
     if (ddl) return;
     setDdlLoading(true);
     try {
-      const res = await api.getTableDDL(tab.connID, tab.schema, tab.table);
+      const res = await api.getTableDDL(tab.connID, tab.schema, tab.table, tab.database);
       setDdl(res.ddl);
     } catch (e: any) {
       message.error(e?.response?.data?.error ?? "DDL 加载失败");
@@ -400,7 +401,7 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
     setSaving(true);
     try {
       const sql = stmts.join("\n");
-      const res = await api.execute(tab.connID, sql);
+      const res = await api.execute(tab.connID, sql, tab.database);
       if (res.error) {
         message.error("保存失败：" + res.error);
       } else {
@@ -513,10 +514,10 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
       const fallback = sql.replace(/ORDER BY ctid/, "");
       let res: ExecuteResponse;
       try {
-        res = await api.execute(tab.connID, sql);
+        res = await api.execute(tab.connID, sql, tab.database);
         if (res.error) throw new Error(res.error);
       } catch {
-        res = await api.execute(tab.connID, fallback);
+        res = await api.execute(tab.connID, fallback, tab.database);
       }
       setData(res);
     } catch (e: any) {
@@ -722,6 +723,7 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
       <div className="sql-toolbar">
         <Space>
           <strong>
+            {tab.database && <span style={{ color: "#2563eb" }}>{tab.database}/</span>}
             {tab.schema}.{tab.table}
           </strong>
           <Tag color={tab.role === "owner" ? "orange" : tab.role === "editor" ? "green" : "default"}>

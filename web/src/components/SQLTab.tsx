@@ -102,11 +102,11 @@ export default function SQLTab({ tab }: Props) {
   const loadTableIndex = async () => {
     setIndexLoading(true);
     try {
-      const schemas = await api.listSchemas(tab.connID);
+      const schemas = await api.listSchemas(tab.connID, tab.database);
       const all = await Promise.all(
         schemas.map(async (s) => {
           try {
-            const ts = await api.listTables(tab.connID, s.name);
+            const ts = await api.listTables(tab.connID, s.name, tab.database);
             return ts.map((t) => ({ schema: s.name, table: t.name, kind: t.kind }));
           } catch {
             return [];
@@ -196,7 +196,7 @@ export default function SQLTab({ tab }: Props) {
     setRunning(true);
     setResult(null);
     try {
-      const res = await api.execute(tab.connID, toRun);
+      const res = await api.execute(tab.connID, toRun, tab.database);
       setResult(res);
       if (res.error) {
         message.error("执行报错：" + res.error);
@@ -255,7 +255,7 @@ export default function SQLTab({ tab }: Props) {
       seen.add(key);
       tasks.push(
         api
-          .getTableDDL(tab.connID, schema, table)
+          .getTableDDL(tab.connID, schema, table, tab.database)
           .then((r) => r.ddl)
           .catch(() => `-- 获取 ${key} 的 DDL 失败`)
       );
@@ -366,6 +366,11 @@ export default function SQLTab({ tab }: Props) {
           </Button>
         </Space>
         <Space size={4} style={{ marginLeft: "auto" }}>
+          {tab.database && (
+            <Tag color="blue">
+              DB: {tab.database}
+            </Tag>
+          )}
           <Tag color={tab.role === "owner" ? "orange" : tab.role === "editor" ? "green" : "default"}>
             权限：{tab.role}
           </Tag>
