@@ -11,11 +11,17 @@ UI 参考了 VSCode 的树形结构与 Navicat 的表数据浏览，定位是**�
 
 ## 界面预览
 
-### 添加数据库连接（PostgreSQL / MySQL）
+### 添加 PostgreSQL 连接
 
-每个连接归属一个组，密码会在落库前做 AES-GCM 加密；支持驱动切换、测试连接、多种 SSL 模式，以及 SSH 隧道 + 客户端证书认证。
+每个连接归属一个组，密码会在落库前做 AES-GCM 加密；支持测试连接、多种 SSL 模式、SSH 隧道（密码 / 私钥 + Passphrase）以及自定义 CA / 客户端证书的双向 TLS。
 
 ![添加 PG 连接](docs/screenshots/add-pg-connection.jpg)
+
+### 添加 MySQL 连接
+
+同一套连接表单支持驱动切换，MySQL 默认端口 3306，SSL 模式自动收敛到 `disable / require / verify-ca`，其余字段（SSH 隧道、证书上传）与 PG 完全一致。
+
+![添加 MySQL 连接](docs/screenshots/mysql-connect.jpg)
 
 ### 连接组管理：成员 / 角色 / LLM 共享
 
@@ -23,11 +29,23 @@ Owner 可邀请成员并指派 Owner / Editor / Viewer；Editor 可继续邀请 
 
 ![组设置](docs/screenshots/group-settings.jpg)
 
-### AI 写 SQL：`@` 引用表自动注入 DDL
+### 表数据浏览：VSCode 风格左树 + Navicat 风格表格
 
-在 AI 对话框输入 `@` 可补全当前连接里的所有表；提交时后端会自动把被引用表的 DDL 作为上下文一并发给模型。返回的 SQL 可一键插入到光标位置。
+左侧树按 连接组 → 连接 → 数据库 → Schema → 表/视图 懒加载展开；右侧 Tab 支持分页、列头三态排序、真实 COUNT、查看 DDL、在 SQL 窗口打开，以及单元格内联编辑（带权限校验，主键感知 UPDATE 生成）。
 
-![AI 生成 SQL](docs/screenshots/ai-generate-sql.jpg)
+![表数据](docs/screenshots/tables.jpg)
+
+### 多条件筛选：contains / IN / IS NULL / bool 下拉
+
+列头点击即可叠加多条筛选：字符串列支持 `contains`、`IN`；数值/日期列支持比较与范围；`nullable` 列支持 `IS NULL / IS NOT NULL`；`bool` 列直接下拉；组合后的条件会实时拼回 WHERE 并重新 COUNT。
+
+![多条件筛选](docs/screenshots/filter.jpg)
+
+### AI 写 SQL：`@` 引用表自动注入 DDL + 选区行号引用
+
+在 AI 对话框输入 `@` 可补全当前连接里的所有表，提交时后端会自动把被引用表的 DDL 作为上下文一并发送给模型。编辑器里已选中的 SQL 片段会作为"编辑器引用"显式展示在弹窗顶部，包含 **第 X – Y 行** 行号范围、字符/行数统计、可展开的片段预览、一键定位到编辑器或移除引用。返回的 SQL 可直接插入到光标位置。
+
+![AI 写 SQL](docs/screenshots/ai-sql.jpg)
 
 ## 目录
 

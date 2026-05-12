@@ -46,6 +46,13 @@ export default function SQLTab({ tab }: Props) {
   const [aiPrompt, setAIPrompt] = useState("");
   const [aiSearch, setAISearch] = useState("");
   const [aiResp, setAIResp] = useState<{ sql: string; explanation?: string } | null>(null);
+  // 打开 AI 弹窗时快照编辑器当前选区（行号 + 文本），失焦后也能稳定展示
+  const [aiSelection, setAISelection] = useState<{
+    startLine: number;
+    endLine: number;
+    text: string;
+  } | null>(null);
+  const [aiSelExpanded, setAISelExpanded] = useState(false);
 
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
@@ -216,6 +223,25 @@ export default function SQLTab({ tab }: Props) {
   const openAI = () => {
     setAIPrompt("");
     setAIResp(null);
+    // 快照当前编辑器选区
+    const ed = editorRef.current;
+    const sel = ed?.getSelection();
+    const model = ed?.getModel();
+    if (ed && sel && model) {
+      const text = model.getValueInRange(sel);
+      if (text && text.trim()) {
+        setAISelection({
+          startLine: sel.startLineNumber,
+          endLine: sel.endLineNumber,
+          text,
+        });
+      } else {
+        setAISelection(null);
+      }
+    } else {
+      setAISelection(null);
+    }
+    setAISelExpanded(false);
     setAIOpen(true);
     // 懒加载 @ 补全索引
     if (tableIndex.length === 0 && !indexLoading) {
@@ -270,8 +296,8 @@ export default function SQLTab({ tab }: Props) {
     if (!aiPrompt.trim()) return;
     setAILoading(true);
     try {
-      const ed = editorRef.current;
-      const selection = ed?.getModel()?.getValueInRange(ed.getSelection()!) ?? "";
+      // 优先使用打开弹窗时快照到的选区，而不是再次读取 Monaco（避免 modal 内失焦后 selection 为空）
+      const selection = aiSelection?.text ?? "";
       const tableDDL = await resolveMentions(aiPrompt);
       const resp = await api.aiChat({
         prompt: aiPrompt,
@@ -435,9 +461,26 @@ export default function SQLTab({ tab }: Props) {
         {!aiResp ? (
           <>
             <Typography.Paragraph type="secondary">
-              输入 <span className="kbd">@</span> 可引用当前连接里的表，提交时会自动把该表的 DDL 一并发给模型。你选中的 SQL 片段也会作为上下文发送。当前方言：{tab.driver === "mysql" ? "mysql" : "postgres"}。
+              输入 <span className="kbd">@</span> 可引用当前连接里的表，提交时会自动把该表的 DDL 一并发给模型。当前方言：{tab.driver === "mysql" ? "mysql" : "postgres"}。
               {indexLoading && <span style={{ marginLeft: 8, color: "#1677ff" }}>表索引加载中…</span>}
             </Typography.Paragraph>
+            <SelectionPreview
+              selection={aiSelection}
+              expanded={aiSelExpanded}
+              onToggle={() => setAISelExpanded((v) => !v)}
+              onRemove={() => setAISelection(null)}
+              onLocate={() => {
+                const ed = editorRef.current;
+                if (!ed || !aiSelection) return;
+                ed.revealLinesInCenter(aiSelection.startLine, aiSelection.endLine);
+                ed.setSelection({
+                  startLineNumber: aiSelection.startLine,
+                  startColumn: 1,
+                  endLineNumber: aiSelection.endLine,
+                  endColumn: Number.MAX_SAFE_INTEGER,
+                });
+              }}
+            />
             <Mentions
               autoFocus
               rows={6}
@@ -712,6 +755,107 @@ function csvEscape(s: string): string {
     return '"' + s.replace(/"/g, '""') + '"';
   }
   return s;
+}
+
+// SelectionPreview：在 AI 弹窗里展示"引用了编辑器哪几行的 SQL 片段"，
+// 含行号范围、折叠/展开预览、定位到编辑器、移除引用
+function SelectionPreview({
+  selection,
+  expanded,
+  onToggle,
+  onRemove,
+  onLocate,
+}: {
+  selection: { startLine: number; endLine: number; text: string } | null;
+  expanded: boolean;
+  onToggle: () => void;
+  onRemove: () => void;
+  onLocate: () => void;
+}) {
+  if (!selection) return null;
+  const { startLine, endLine, text } = selection;
+  const lineCount = endLine - startLine + 1;
+  const charCount = text.length;
+  const rangeLabel = startLine === endLine ? `第 ${startLine} 行` : `第 ${startLine} – ${endLine} 行`;
+  // 折叠时只展示首行摘要（截断 120 字），展开时用 pre 显示完整片段
+  const firstLine = text.split(/\r?\n/)[0] ?? "";
+  const summary = firstLine.length > 120 ? firstLine.slice(0, 120) + "…" : firstLine;
+
+  return (
+    <div
+      style={{
+        marginBottom: 12,
+        border: "1px solid #d9e2ec",
+        background: "#f5f8ff",
+        borderRadius: 6,
+        padding: "8px 10px",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <Tag color="geekblue" style={{ margin: 0 }}>
+          编辑器引用
+        </Tag>
+        <Typography.Text strong style={{ fontSize: 12 }}>
+          {rangeLabel}
+        </Typography.Text>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          （{lineCount} 行 · {charCount} 字符）
+        </Typography.Text>
+        <span style={{ marginLeft: "auto" }}>
+          <Button size="small" type="link" onClick={onToggle} style={{ padding: "0 4px" }}>
+            {expanded ? "收起" : "展开预览"}
+          </Button>
+          <Button size="small" type="link" onClick={onLocate} style={{ padding: "0 4px" }}>
+            定位到编辑器
+          </Button>
+          <Button
+            size="small"
+            type="link"
+            danger
+            onClick={onRemove}
+            style={{ padding: "0 4px" }}
+          >
+            移除
+          </Button>
+        </span>
+      </div>
+      {expanded ? (
+        <pre
+          style={{
+            marginTop: 8,
+            marginBottom: 0,
+            background: "#0f172a",
+            color: "#e2e8f0",
+            padding: 10,
+            borderRadius: 4,
+            maxHeight: 180,
+            overflow: "auto",
+            fontSize: 12,
+            lineHeight: 1.5,
+            whiteSpace: "pre",
+          }}
+        >
+          {text}
+        </pre>
+      ) : (
+        <Typography.Text
+          type="secondary"
+          style={{
+            display: "block",
+            marginTop: 6,
+            fontSize: 12,
+            fontFamily:
+              "SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {summary || <i>（空白行）</i>}
+        </Typography.Text>
+      )}
+    </div>
+  );
 }
 
 // MentionedChips：从 prompt 中解析出 @xxx 引用，以 Tag 的形式展示，并可关闭
