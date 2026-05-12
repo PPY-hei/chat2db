@@ -7,6 +7,8 @@ import (
 	"strconv"
 
 	"github.com/chy/chat2db/server/internal/auth"
+	"github.com/chy/chat2db/server/internal/config"
+	cryptopkg "github.com/chy/chat2db/server/internal/crypto"
 	"github.com/chy/chat2db/server/internal/db"
 	"github.com/chy/chat2db/server/internal/dbexec"
 	"github.com/chy/chat2db/server/internal/llm"
@@ -313,9 +315,12 @@ func TestConnection(c *gin.Context) {
 		}
 		conn = got
 	} else if in.Draft != nil {
+		key := config.Get().CredentialKey
 		conn = &model.Connection{
 			Name: in.Draft.Name, Driver: in.Draft.Driver, Host: in.Draft.Host, Port: in.Draft.Port,
 			Database: in.Draft.Database, Username: in.Draft.Username, SSLMode: in.Draft.SSLMode,
+			SSHEnabled: in.Draft.SSHEnabled, SSHHost: in.Draft.SSHHost, SSHPort: in.Draft.SSHPort,
+			SSHUser: in.Draft.SSHUser, SSHAuthMethod: in.Draft.SSHAuthMethod,
 		}
 		// encrypt in-memory so DecryptPassword works
 		enc, err := service.EncryptForTest(in.Draft.Password)
@@ -324,6 +329,59 @@ func TestConnection(c *gin.Context) {
 			return
 		}
 		conn.PasswordEnc = enc
+		// SSH 凭据
+		if in.Draft.SSHPassword != "" {
+			enc, err := cryptopkg.EncryptString(in.Draft.SSHPassword, key)
+			if err != nil {
+				badRequest(c, err)
+				return
+			}
+			conn.SSHPasswordEnc = enc
+		}
+		if in.Draft.SSHPrivateKey != "" {
+			enc, err := cryptopkg.EncryptString(in.Draft.SSHPrivateKey, key)
+			if err != nil {
+				badRequest(c, err)
+				return
+			}
+			conn.SSHPrivateKeyEnc = enc
+		}
+		if in.Draft.SSHPassphrase != "" {
+			enc, err := cryptopkg.EncryptString(in.Draft.SSHPassphrase, key)
+			if err != nil {
+				badRequest(c, err)
+				return
+			}
+			conn.SSHPassphraseEnc = enc
+		}
+		// SSL 证书
+		if in.Draft.SSLCACert != "" {
+			enc, err := cryptopkg.EncryptString(in.Draft.SSLCACert, key)
+			if err != nil {
+				badRequest(c, err)
+				return
+			}
+			conn.SSLCACertEnc = enc
+		}
+		if in.Draft.SSLClientCert != "" {
+			enc, err := cryptopkg.EncryptString(in.Draft.SSLClientCert, key)
+			if err != nil {
+				badRequest(c, err)
+				return
+			}
+			conn.SSLClientCertEnc = enc
+		}
+		if in.Draft.SSLClientKey != "" {
+			enc, err := cryptopkg.EncryptString(in.Draft.SSLClientKey, key)
+			if err != nil {
+				badRequest(c, err)
+				return
+			}
+			conn.SSLClientKeyEnc = enc
+		}
+		if conn.SSHPort == 0 {
+			conn.SSHPort = 22
+		}
 	} else {
 		badRequest(c, errors.New("missing connection_id or draft"))
 		return

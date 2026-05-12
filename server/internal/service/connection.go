@@ -19,6 +19,26 @@ type ConnectionInput struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	SSLMode  string `json:"ssl_mode"`
+	// SSL 证书（PEM 文本明文，服务端加密后存储）
+	SSLCACert    string `json:"ssl_ca_cert,omitempty"`
+	SSLClientCert string `json:"ssl_client_cert,omitempty"`
+	SSLClientKey  string `json:"ssl_client_key,omitempty"`
+	// SSH 隧道
+	SSHEnabled    bool   `json:"ssh_enabled"`
+	SSHHost       string `json:"ssh_host"`
+	SSHPort       int    `json:"ssh_port"`
+	SSHUser       string `json:"ssh_user"`
+	SSHAuthMethod string `json:"ssh_auth_method"` // "password" | "privatekey"
+	SSHPassword   string `json:"ssh_password,omitempty"`
+	SSHPrivateKey string `json:"ssh_private_key,omitempty"`
+	SSHPassphrase string `json:"ssh_passphrase,omitempty"`
+}
+
+func encryptOptional(plain string, key []byte) (string, error) {
+	if plain == "" {
+		return "", nil
+	}
+	return cryptopkg.EncryptString(plain, key)
 }
 
 // CreateConnection creates a new connection in the group. Owner only.
@@ -41,21 +61,58 @@ func CreateConnection(actorID, groupID uint, in ConnectionInput) (*model.Connect
 	if in.SSLMode == "" {
 		in.SSLMode = "disable"
 	}
-	enc, err := cryptopkg.EncryptString(in.Password, config.Get().CredentialKey)
+	key := config.Get().CredentialKey
+	enc, err := cryptopkg.EncryptString(in.Password, key)
 	if err != nil {
 		return nil, err
 	}
 	c := &model.Connection{
 		GroupID:     groupID,
-		Name:        in.Name,
-		Driver:      in.Driver,
-		Host:        in.Host,
-		Port:        in.Port,
-		Database:    in.Database,
-		Username:    in.Username,
+		Name:       in.Name,
+		Driver:     in.Driver,
+		Host:       in.Host,
+		Port:       in.Port,
+		Database:   in.Database,
+		Username:   in.Username,
 		PasswordEnc: enc,
-		SSLMode:     in.SSLMode,
+		SSLMode:    in.SSLMode,
 		CreatedByID: actorID,
+		SSHEnabled: in.SSHEnabled,
+	}
+	// SSL 证书
+	if c.SSLCACertEnc, err = encryptOptional(in.SSLCACert, key); err != nil {
+		return nil, err
+	}
+	if c.SSLClientCertEnc, err = encryptOptional(in.SSLClientCert, key); err != nil {
+		return nil, err
+	}
+	if c.SSLClientKeyEnc, err = encryptOptional(in.SSLClientKey, key); err != nil {
+		return nil, err
+	}
+	// SSH
+	if in.SSHEnabled {
+		if in.SSHHost == "" || in.SSHUser == "" {
+			return nil, errors.New("ssh_host and ssh_user are required when SSH is enabled")
+		}
+		c.SSHHost = in.SSHHost
+		c.SSHPort = in.SSHPort
+		if c.SSHPort == 0 {
+			c.SSHPort = 22
+		}
+		c.SSHUser = in.SSHUser
+		c.SSHAuthMethod = in.SSHAuthMethod
+		if c.SSHAuthMethod == "" {
+			c.SSHAuthMethod = "password"
+		}
+		if c.SSHPasswordEnc, err = encryptOptional(in.SSHPassword, key); err != nil {
+			return nil, err
+		}
+		if c.SSHPrivateKeyEnc, err = encryptOptional(in.SSHPrivateKey, key); err != nil {
+			return nil, err
+		}
+		if c.SSHPassphraseEnc, err = encryptOptional(in.SSHPassphrase, key); err != nil {
+			return nil, err
+		}
 	}
 	if err := db.Meta().Create(c).Error; err != nil {
 		return nil, err
@@ -72,6 +129,7 @@ func UpdateConnection(actorID, connID uint, in ConnectionInput) (*model.Connecti
 	if _, err := RequireRole(actorID, c.GroupID, model.RoleOwner); err != nil {
 		return nil, err
 	}
+	key := config.Get().CredentialKey
 	if in.Name != "" {
 		c.Name = in.Name
 	}
@@ -91,11 +149,78 @@ func UpdateConnection(actorID, connID uint, in ConnectionInput) (*model.Connecti
 		c.SSLMode = in.SSLMode
 	}
 	if in.Password != "" {
-		enc, err := cryptopkg.EncryptString(in.Password, config.Get().CredentialKey)
+		enc, err := cryptopkg.EncryptString(in.Password, key)
 		if err != nil {
 			return nil, err
 		}
 		c.PasswordEnc = enc
+	}
+	// SSL 证书：如果前端传了值则更新（传空字符串也可以用于清空）
+	if in.SSLCACert != "" {
+		enc, err := encryptOptional(in.SSLCACert, key)
+		if err != nil {
+			return nil, err
+		}
+		c.SSLCACertEnc = enc
+	}
+	if in.SSLClientCert != "" {
+		enc, err := encryptOptional(in.SSLClientCert, key)
+		if err != nil {
+			return nil, err
+		}
+		c.SSLClientCertEnc = enc
+	}
+	if in.SSLClientKey != "" {
+		enc, err := encryptOptional(in.SSLClientKey, key)
+		if err != nil {
+			return nil, err
+		}
+		c.SSLClientKeyEnc = enc
+	}
+	// SSH 隧道
+	c.SSHEnabled = in.SSHEnabled
+	if in.SSHEnabled {
+		if in.SSHHost != "" {
+			c.SSHHost = in.SSHHost
+		}
+		if in.SSHPort != 0 {
+			c.SSHPort = in.SSHPort
+		}
+		if in.SSHUser != "" {
+			c.SSHUser = in.SSHUser
+		}
+		if in.SSHAuthMethod != "" {
+			c.SSHAuthMethod = in.SSHAuthMethod
+		}
+		if in.SSHPassword != "" {
+			enc, err := encryptOptional(in.SSHPassword, key)
+			if err != nil {
+				return nil, err
+			}
+			c.SSHPasswordEnc = enc
+		}
+		if in.SSHPrivateKey != "" {
+			enc, err := encryptOptional(in.SSHPrivateKey, key)
+			if err != nil {
+				return nil, err
+			}
+			c.SSHPrivateKeyEnc = enc
+		}
+		if in.SSHPassphrase != "" {
+			enc, err := encryptOptional(in.SSHPassphrase, key)
+			if err != nil {
+				return nil, err
+			}
+			c.SSHPassphraseEnc = enc
+		}
+	} else {
+		c.SSHHost = ""
+		c.SSHPort = 0
+		c.SSHUser = ""
+		c.SSHAuthMethod = ""
+		c.SSHPasswordEnc = ""
+		c.SSHPrivateKeyEnc = ""
+		c.SSHPassphraseEnc = ""
 	}
 	if err := db.Meta().Save(&c).Error; err != nil {
 		return nil, err

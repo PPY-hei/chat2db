@@ -80,6 +80,19 @@ type Connection struct {
 	Username    string         `gorm:"size:128;not null" json:"username"`
 	PasswordEnc string         `gorm:"size:1024;not null" json:"-"`
 	SSLMode     string         `gorm:"size:32;default:'disable'" json:"ssl_mode"`
+	// SSL 证书（PEM 文本，加密存储）
+	SSLCACertEnc    string `gorm:"type:text" json:"-"` // CA 根证书
+	SSLClientCertEnc string `gorm:"type:text" json:"-"` // 客户端证书
+	SSLClientKeyEnc  string `gorm:"type:text" json:"-"` // 客户端私钥
+	// SSH 隧道
+	SSHEnabled       bool   `gorm:"not null;default:false" json:"ssh_enabled"`
+	SSHHost          string `gorm:"size:255" json:"ssh_host"`
+	SSHPort          int    `gorm:"default:22" json:"ssh_port"`
+	SSHUser          string `gorm:"size:128" json:"ssh_user"`
+	SSHAuthMethod    string `gorm:"size:32" json:"ssh_auth_method"` // "password" | "privatekey"
+	SSHPasswordEnc   string `gorm:"size:1024" json:"-"`
+	SSHPrivateKeyEnc string `gorm:"type:text" json:"-"`
+	SSHPassphraseEnc string `gorm:"size:1024" json:"-"` // 私钥的 passphrase
 	CreatedByID uint           `gorm:"not null" json:"created_by_id"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`

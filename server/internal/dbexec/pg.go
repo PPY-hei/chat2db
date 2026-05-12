@@ -2,12 +2,16 @@ package dbexec
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"net"
 	"net/url"
 	"sync"
 	"time"
 
 	"github.com/chy/chat2db/server/internal/config"
+	cryptopkg "github.com/chy/chat2db/server/internal/crypto"
 	"github.com/chy/chat2db/server/internal/model"
 	"github.com/chy/chat2db/server/internal/service"
 	"github.com/jackc/pgx/v5"
@@ -17,7 +21,7 @@ import (
 // poolEntry caches a pgxpool.Pool keyed by connection ID (+ updated_at).
 type poolEntry struct {
 	pool    *pgxpool.Pool
-	version string // connection.UpdatedAt to invalidate cache on edit
+	version string
 }
 
 var (
@@ -26,25 +30,76 @@ var (
 )
 
 // dsnFor builds a pgx DSN from the model.Connection.
+// If SSH tunnel is enabled, host:port will be the local tunnel endpoint.
 func dsnFor(c *model.Connection) (string, error) {
 	pwd, err := service.DecryptPassword(c)
 	if err != nil {
 		return "", err
 	}
+
+	host, port, err := getSSHTunnel(c)
+	if err != nil {
+		return "", err
+	}
+
 	u := &url.URL{
 		Scheme: "postgres",
 		User:   url.UserPassword(c.Username, pwd),
-		Host:   fmt.Sprintf("%s:%d", c.Host, c.Port),
+		Host:   fmt.Sprintf("%s:%d", host, port),
 		Path:   "/" + c.Database,
 	}
 	q := u.Query()
-	if c.SSLMode == "" {
-		q.Set("sslmode", "disable")
-	} else {
-		q.Set("sslmode", c.SSLMode)
+	sslMode := c.SSLMode
+	if sslMode == "" {
+		sslMode = "disable"
 	}
+	q.Set("sslmode", sslMode)
 	u.RawQuery = q.Encode()
 	return u.String(), nil
+}
+
+// buildTLSConfig creates a *tls.Config from the connection's SSL cert fields.
+// Returns nil if no certs are configured (pgx will use sslmode param only).
+func buildTLSConfig(c *model.Connection) (*tls.Config, error) {
+	key := config.Get().CredentialKey
+	hasCerts := c.SSLCACertEnc != "" || c.SSLClientCertEnc != "" || c.SSLClientKeyEnc != ""
+	if !hasCerts {
+		return nil, nil
+	}
+
+	tlsCfg := &tls.Config{
+		ServerName: c.Host,
+	}
+
+	if c.SSLCACertEnc != "" {
+		caPEM, err := cryptopkg.DecryptString(c.SSLCACertEnc, key)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt ssl ca cert: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM([]byte(caPEM)) {
+			return nil, fmt.Errorf("invalid CA certificate PEM")
+		}
+		tlsCfg.RootCAs = pool
+	}
+
+	if c.SSLClientCertEnc != "" && c.SSLClientKeyEnc != "" {
+		certPEM, err := cryptopkg.DecryptString(c.SSLClientCertEnc, key)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt ssl client cert: %w", err)
+		}
+		keyPEM, err := cryptopkg.DecryptString(c.SSLClientKeyEnc, key)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt ssl client key: %w", err)
+		}
+		cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+		if err != nil {
+			return nil, fmt.Errorf("parse ssl client cert/key: %w", err)
+		}
+		tlsCfg.Certificates = []tls.Certificate{cert}
+	}
+
+	return tlsCfg, nil
 }
 
 // getPool returns a cached pgxpool.Pool for the connection.
@@ -75,6 +130,27 @@ func getPool(ctx context.Context, c *model.Connection) (*pgxpool.Pool, error) {
 	cfg.MinConns = 0
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.MaxConnIdleTime = 10 * time.Minute
+
+	tlsCfg, err := buildTLSConfig(c)
+	if err != nil {
+		return nil, err
+	}
+	if tlsCfg != nil {
+		cfg.ConnConfig.TLSConfig = tlsCfg
+	}
+
+	// SSH 隧道需要自定义 DialFunc 连到本地隧道端口
+	if c.SSHEnabled {
+		tunnelHost, tunnelPort, err := getSSHTunnel(c)
+		if err != nil {
+			return nil, err
+		}
+		localAddr := fmt.Sprintf("%s:%d", tunnelHost, tunnelPort)
+		cfg.ConnConfig.DialFunc = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return net.DialTimeout("tcp", localAddr, 10*time.Second)
+		}
+	}
+
 	p, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -95,7 +171,28 @@ func Ping(ctx context.Context, c *model.Connection) error {
 	if err != nil {
 		return err
 	}
-	conn, err := pgx.Connect(ctx, dsn)
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return err
+	}
+	tlsCfg, err := buildTLSConfig(c)
+	if err != nil {
+		return err
+	}
+	if tlsCfg != nil {
+		cfg.TLSConfig = tlsCfg
+	}
+	if c.SSHEnabled {
+		tunnelHost, tunnelPort, err2 := getSSHTunnel(c)
+		if err2 != nil {
+			return err2
+		}
+		localAddr := fmt.Sprintf("%s:%d", tunnelHost, tunnelPort)
+		cfg.DialFunc = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return net.DialTimeout("tcp", localAddr, 10*time.Second)
+		}
+	}
+	conn, err := pgx.ConnectConfig(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -117,10 +214,9 @@ type QueryResult struct {
 }
 
 // Exec runs one SQL statement and returns a result.
-// For SELECT / RETURNING it fills Columns/Rows; otherwise RowsAffected.
 func Exec(ctx context.Context, c *model.Connection, sql string, args ...any) (*QueryResult, error) {
-	cfg := config.Get()
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(cfg.QueryTimeoutSec)*time.Second)
+	appCfg := config.Get()
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(appCfg.QueryTimeoutSec)*time.Second)
 	defer cancel()
 	p, err := getPool(ctx, c)
 	if err != nil {
@@ -143,7 +239,7 @@ func Exec(ctx context.Context, c *model.Connection, sql string, args ...any) (*Q
 			out.Columns[i] = string(f.Name)
 			out.Types[i] = pgTypeName(f.DataTypeOID)
 		}
-		limit := cfg.QueryMaxRows
+		limit := appCfg.QueryMaxRows
 		count := 0
 		for rows.Next() {
 			if count >= limit {
@@ -171,11 +267,12 @@ func Exec(ctx context.Context, c *model.Connection, sql string, args ...any) (*Q
 // InvalidatePool should be called after a connection is updated or deleted.
 func InvalidatePool(connID uint) {
 	poolMu.Lock()
-	defer poolMu.Unlock()
 	if e, ok := pools[connID]; ok {
 		e.pool.Close()
 		delete(pools, connID)
 	}
+	poolMu.Unlock()
+	invalidateSSHTunnel(connID)
 }
 
 // Rudimentary PG type OID mapping for the most common cases.

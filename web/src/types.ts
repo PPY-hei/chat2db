@@ -36,6 +36,12 @@ export interface Connection {
   database: string;
   username: string;
   ssl_mode: string;
+  // SSH 隧道
+  ssh_enabled: boolean;
+  ssh_host: string;
+  ssh_port: number;
+  ssh_user: string;
+  ssh_auth_method: string;
   created_by_id: number;
   created_at: string;
   updated_at: string;
