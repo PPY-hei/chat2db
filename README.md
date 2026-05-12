@@ -1,18 +1,19 @@
 # Chat2DB Web
 
-> 一个轻量、Web 化的 PostgreSQL 可视化管理平台，支持多人协作、基于角色的 SQL 权限拦截、团队共享 AI 辅助写 SQL。后端 Go + Gin + GORM，前端 React + AntD + Monaco。
+> 一个轻量、Web 化的 **PostgreSQL / MySQL** 可视化管理平台，支持多人协作、基于角色的 SQL 权限拦截、团队共享 AI 辅助写 SQL。后端 Go + Gin + GORM，前端 React + AntD + Monaco。
 
 UI 参考了 VSCode 的树形结构与 Navicat 的表数据浏览，定位是**可以丢在内网给团队使用的"数据库管理协作台"**：
 
 - 每个连接分配到一个"连接组"，组 = 共享单元。
 - 账号之间不共用数据库账号，权限完全由**应用层 RBAC + SQL 解析器**控制，杜绝"Viewer 执行 DROP"这种越权。
 - 支持 AI 对话写 SQL，组 Owner 可共享自己的 LLM 配置给组内成员，无需每人一份 API Key。
+- 支持 **SSH 隧道** 与 **双向 SSL 认证**，敏感凭据（DB 密码、SSH 密码/私钥/Passphrase、证书私钥）均做 AES-GCM 加密落库。
 
 ## 界面预览
 
-### 添加 PostgreSQL 连接
+### 添加数据库连接（PostgreSQL / MySQL）
 
-每个连接归属一个组，密码会在落库前做 AES-GCM 加密；支持测试连接与多种 SSL 模式。
+每个连接归属一个组，密码会在落库前做 AES-GCM 加密；支持驱动切换、测试连接、多种 SSL 模式，以及 SSH 隧道 + 客户端证书认证。
 
 ![添加 PG 连接](docs/screenshots/add-pg-connection.jpg)
 
@@ -62,12 +63,13 @@ Owner 可邀请成员并指派 Owner / Editor / Viewer；Editor 可继续邀请 
 |------|------|
 | 账号 | 邮箱 + 密码注册、登录（bcrypt），JWT 鉴权 |
 | 连接组 | Owner / Editor / Viewer 三级 RBAC；Owner 可把组分享给其他账号；Editor 可邀请 Viewer/Editor 成员；Owner 可切换"大模型配置共享" |
-| 数据源 | PostgreSQL（`pgx` 池化连接，按连接缓存并在编辑/删除时自动失效） |
-| 浏览 | VSCode 风格左侧树：连接组 → 连接 → Schema → 表/视图；懒加载 + 虚拟滚动；支持按组刷新 Schema |
-| 表数据 | 分页（20/50/100/200/500）、列头三态排序、多条件筛选（含 `contains`、`IN`、`IS NULL`、bool 列专用下拉）、COUNT(*) 真实总数、`查看 DDL`、`在 SQL 窗口打开` |
-| SQL 窗口 | Monaco 编辑器、多 Tab、拖拽调整 SQL/结果区比例、选中执行、结果复制 TSV / 导出 CSV |
+| 数据源 | **PostgreSQL**（`pgx` 池化）与 **MySQL**（`database/sql` + `go-sql-driver/mysql` 池化）；按连接缓存，编辑 / 删除 / 更新凭据时自动失效 |
+| 安全通道 | **SSH 隧道**（密码 / 私钥 + Passphrase 认证）、**双向 SSL** 连接（自定义 CA / 客户端证书 / 客户端私钥）；所有敏感凭据 AES-256-GCM 加密落库 |
+| 浏览 | VSCode 风格左侧树：连接组 → 连接 → 数据库 → Schema → 表/视图；会话级别**数据库切换**，无需改连接即可跨库浏览；懒加载 + 虚拟滚动；支持按组刷新 Schema |
+| 表数据 | 分页（20/50/100/200/500）、列头三态排序、多条件筛选（含 `contains`、`IN`、`IS NULL`、bool 列专用下拉）、COUNT(*) 真实总数、`查看 DDL`、`在 SQL 窗口打开`、**单元格内联编辑**（带权限校验 + 主键感知 UPDATE 生成） |
+| SQL 窗口 | Monaco 编辑器、多 Tab、拖拽调整 SQL/结果区比例、选中执行、结果复制 TSV / 导出 CSV；方言随连接自动切换（postgres / mysql） |
 | SQL 权限拦截 | 后端 SQL 解析器按语句分类（read/write/ddl/admin/tx）匹配角色白名单，支持多语句、注释、字符串、`$tag$` dollar-quoted、CTE 写操作保守策略 |
-| AI 写 SQL | OpenAI 兼容接口，任何 endpoint 可接；输入框 `@` 引用当前连接的表，自动把引用表 DDL 一起发送给模型；引用以 Tag 展示并可删除；Owner 可把 LLM 配置共享给组内成员 |
+| AI 写 SQL | OpenAI 兼容接口，任何 endpoint 可接；输入框 `@` 引用当前连接的表，自动把引用表 DDL 一起发送给模型；引用以 Tag 展示并可删除；方言随连接切换；Owner 可把 LLM 配置共享给组内成员 |
 | 团队共享 SQL | 任意组员可收藏 SQL 到组内（标题必填、描述可选）；组内所有成员可见、可"插入到光标"；个人收藏视图聚合所有组内收藏，一键跳转执行 |
 | UX | 侧边栏宽度可拖拽、SQL 编辑器/结果区比例可拖拽、尺寸持久化到 localStorage；树结构虚拟化避免大表性能问题 |
 
@@ -75,13 +77,15 @@ Owner 可邀请成员并指派 Owner / Editor / Viewer；Editor 可继续邀请 
 
 ### 后端
 
-- Go 1.24
+- Go 1.25
 - [Gin](https://github.com/gin-gonic/gin) HTTP 框架
 - [GORM](https://gorm.io) + SQLite 作为**应用元数据库**（账号 / 组 / 成员 / 连接 / 收藏 SQL）
 - [pgx v5](https://github.com/jackc/pgx) 连接目标 PostgreSQL 实例（池化，每连接独立池）
+- [go-sql-driver/mysql](https://github.com/go-sql-driver/mysql) 连接目标 MySQL 实例（`database/sql` 池化，每连接独立池）
+- [golang.org/x/crypto/ssh](https://pkg.go.dev/golang.org/x/crypto/ssh) 建立 SSH 隧道并做本地端口转发
 - [golang-jwt](https://github.com/golang-jwt/jwt) JWT 签发/校验
 - `golang.org/x/crypto/bcrypt` 账号密码
-- `crypto/aes`（AES-256-GCM）加密数据库密码 / LLM API Key
+- `crypto/aes`（AES-256-GCM）加密数据库密码 / SSH 凭据 / 证书 / LLM API Key
 - 内置 SQL 解析器（`internal/sqlguard`），纯 Go 实现无额外依赖
 
 ### 前端
@@ -111,18 +115,18 @@ Owner 可邀请成员并指派 Owner / Editor / Viewer；Editor 可继续邀请 
 │  ├─────────┴──────────┴─────────────────────────┤               │
 │  │ service (user/group/connection/saved_query)  │               │
 │  ├──────────────────┬────────────────────────────┤              │
-│  │ sqlguard         │ dbexec (pgx pool per conn)│               │
-│  │ (permission)     │ meta / exec / DDL gen     │               │
+│  │ sqlguard         │ dbexec (pool per conn)    │               │
+│  │ (permission)     │ pg / mysql / meta / DDL   │               │
 │  ├──────────────────┼────────────────────────────┤              │
 │  │ llm.Chat         │  crypto (AES-GCM)         │               │
-│  │ (OpenAI compat)  │                           │               │
+│  │ (OpenAI compat)  │  ssh tunnel (optional)    │               │
 │  └──────────────────┴────────────────────────────┘              │
 │  GORM + SQLite (app metadata) ───► chat2db.db                   │
 └─────────────────────────────────────────────────────────────────┘
         │                       │                     │
         ▼                       ▼                     ▼
- PostgreSQL 实例 A       PostgreSQL 实例 B      OpenAI 兼容 API
- （组成员共享）          （组成员共享）         （可选、用户级/组共享）
+ PostgreSQL / MySQL 实例  可选 SSH 堡垒机 + SSL   OpenAI 兼容 API
+ （组成员共享）           （组成员共享）         （可选、用户级/组共享）
 ```
 
 ## 目录结构
@@ -138,7 +142,11 @@ chat2db/
 │       ├── config/                 # env 读取
 │       ├── crypto/                 # AES-GCM
 │       ├── db/                     # SQLite 初始化 + AutoMigrate
-│       ├── dbexec/                 # pgx 池化 + 元数据 + DDL 生成
+│       ├── dbexec/                 # 连接池 + 元数据 + DDL 生成
+│       │   ├── pg.go / pg_meta.go          # PostgreSQL (pgx)
+│       │   ├── mysql.go / mysql_meta.go    # MySQL (database/sql)
+│       │   ├── meta.go                     # 驱动分发 / 临时 database 切换
+│       │   └── ssh.go                      # SSH 隧道（复用 / 失效管理）
 │       ├── llm/                    # OpenAI 兼容代理 + 凭据回退
 │       ├── middleware/             # AuthRequired
 │       ├── model/                  # User/Group/GroupMember/Connection/SavedQuery
@@ -205,8 +213,10 @@ CTE 对 `WITH x AS (...) INSERT/UPDATE/DELETE ...` 采用**保守策略**：只�
 
 其它安全实践：
 
-- 数据库密码 / LLM API Key 都用 AES-256-GCM（32 字节 key）加密落 SQLite。
-- pgx 查询统一走参数化（元数据查询如 `ListTables` / `ListColumns` 用 `$1/$2`），用户层 SQL 走 SQL 解析器白名单。
+- 数据库密码 / SSH 密码 / SSH 私钥 / SSH Passphrase / 客户端证书私钥 / LLM API Key 全部用 AES-256-GCM（32 字节 key）加密落 SQLite。
+- pgx 与 `database/sql` 查询统一走参数化（元数据查询如 `ListTables` / `ListColumns` 用占位符），用户层 SQL 走 SQL 解析器白名单。
+- 支持 SSL 模式 `disable` / `require` / `verify-ca` / `verify-full`（PG 全部支持，MySQL 支持 `disable` / `require` / `verify-ca`）；上传的 CA / 客户端证书 / 客户端私钥经解密后组装成 `*tls.Config` 传给底层驱动。
+- 可选的 SSH 隧道仅在**进程内存**维护 `connID → listener + ssh.Client` 的复用条目，连接更新/删除时立刻失效并关闭。
 - JWT 通过 HS256 签发；未带/过期 token 返回 401，前端全局拦截器会自动跳回登录页。
 - LLM API Key 永远只驻留在后端内存，通过服务端代理转发，不会在 `/api/me` 等接口返回给前端。
 
@@ -214,9 +224,10 @@ CTE 对 `WITH x AS (...) INSERT/UPDATE/DELETE ...` 采用**保守策略**：只�
 
 ### 先决条件
 
-- Go ≥ 1.22（推荐 1.24）
+- Go ≥ 1.25
 - Node ≥ 18
-- 一套可访问的 PostgreSQL 实例（10+ 都可）
+- 一套可访问的 **PostgreSQL（10+）或 MySQL（5.7+ / 8.x）实例**
+- 可选：OpenSSH 堡垒机（用于 SSH 隧道）、CA / 客户端证书（用于 verify-ca / verify-full）
 - 可选：OpenAI 兼容 API（OpenAI / DeepSeek / Kimi / Qwen / 本地 vLLM 等）
 
 ### 后端
@@ -298,7 +309,7 @@ WantedBy=multi-user.target
 
 ```dockerfile
 # ---- Backend ----
-FROM golang:1.24-alpine AS backend-builder
+FROM golang:1.25-alpine AS backend-builder
 WORKDIR /src
 COPY server/go.mod server/go.sum ./
 RUN go mod download
@@ -389,11 +400,12 @@ server {
 | `PUT`  | `/api/connections/:connID` | 更新连接（Owner） |
 | `DELETE` | `/api/connections/:connID` | 删除连接（Owner） |
 | `POST` | `/api/connections/test` | 测试连接（支持已保存或草稿） |
-| `GET`  | `/api/connections/:connID/schemas` | Schema 列表 |
-| `GET`  | `/api/connections/:connID/tables?schema=` | 指定 schema 下的表/视图 |
-| `GET`  | `/api/connections/:connID/columns?schema=&table=` | 列信息 |
-| `GET`  | `/api/connections/:connID/ddl?schema=&table=` | 生成可读 DDL |
-| `POST` | `/api/connections/:connID/execute` | 执行 SQL（经 SQL 解析器拦截） |
+| `GET`  | `/api/connections/:connID/databases` | 实例上的**数据库列表**（PG 列 `pg_database`，MySQL 列 `SHOW DATABASES`） |
+| `GET`  | `/api/connections/:connID/schemas?database=` | Schema 列表，可用 `?database=` 临时切换目标库 |
+| `GET`  | `/api/connections/:connID/tables?schema=&database=` | 指定 schema 下的表/视图 |
+| `GET`  | `/api/connections/:connID/columns?schema=&table=&database=` | 列信息 |
+| `GET`  | `/api/connections/:connID/ddl?schema=&table=&database=` | 生成可读 DDL |
+| `POST` | `/api/connections/:connID/execute?database=` | 执行 SQL（经 SQL 解析器拦截，可切换目标库） |
 | `GET`  | `/api/groups/:groupID/saved-queries` | 组内收藏 SQL |
 | `GET`  | `/api/me/saved-queries` | 我能看到的所有收藏 SQL |
 | `POST` | `/api/saved-queries` | 新建收藏 |
@@ -413,20 +425,24 @@ server {
 
 ## 数据与安全性说明
 
-- **应用自身的数据**全部落在 SQLite（`META_DB_PATH`）：账号、组、成员、连接、收藏 SQL、加密后的 LLM 配置。**目标数据库的数据不会被读写到这个文件**。
-- **目标数据库账号**：由组 Owner 创建连接时填写；被加密后存储，运行时才解密并传给 pgx。**强烈建议在生产库上给本服务建独立只读账号，即使一时粗心给了 Viewer 一条 `DROP` 语句，数据库层也会拒绝。** sqlguard 是第一道防线，数据库权限是最终兜底。
+- **应用自身的数据**全部落在 SQLite（`META_DB_PATH`）：账号、组、成员、连接、收藏 SQL、加密后的 DB/SSH 凭据与证书、加密后的 LLM 配置。**目标数据库的数据不会被读写到这个文件**。
+- **目标数据库账号**：由组 Owner 创建连接时填写；被加密后存储，运行时才解密并传给驱动（pgx / database/sql）。**强烈建议在生产库上给本服务建独立只读账号，即使一时粗心给了 Viewer 一条 `DROP` 语句，数据库层也会拒绝。** sqlguard 是第一道防线，数据库权限是最终兜底。
+- **SSH 隧道**：只在后端进程内存里维护隧道条目，进程重启或连接凭据更新都会立刻失效旧隧道；私钥 / Passphrase 永远只驻留在后端内存。
 - **多租户隔离**：所有查询都必须先通过 `RequireRole(actorID, groupID, …)`，业务路径不会绕过组的 membership 检查。
 - **日志**：默认 Gin access log，不会打印 SQL 参数或密码；但你自己在前端看到报错时上报截图请自行遮挡。
 
 ## 路线图 / TODO
 
-- [ ] MySQL / MariaDB / ClickHouse / SQL Server 驱动
+- [x] MySQL 驱动
+- [x] SSH 隧道 + 双向 SSL
+- [x] 表数据单元格内联编辑（带权限校验）
+- [x] 数据库层级切换（会话级别）
+- [ ] MariaDB / ClickHouse / SQL Server 驱动
 - [ ] 组内收藏 SQL 的版本化 / 协作编辑
 - [ ] 审计日志（谁、什么时间、哪条 SQL）
 - [ ] Docker 官方镜像 + Compose
 - [ ] 切换到 PostgreSQL 作为元数据库（可选）
 - [ ] 2FA / SSO（OIDC）
-- [ ] 表数据单元格内联编辑（带权限校验）
 
 ## License
 
