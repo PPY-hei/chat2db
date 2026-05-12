@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   App,
   Button,
@@ -22,6 +22,9 @@ import {
   CloseOutlined,
   SortAscendingOutlined,
   SortDescendingOutlined,
+  SaveOutlined,
+  UndoOutlined,
+  EyeOutlined,
 } from "@ant-design/icons";
 import { api } from "../api";
 import type { ColumnInfo, ExecuteResponse } from "../types";
@@ -269,9 +272,150 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
     setDraftFilters([]);
     setSortColumn(null);
     setSortDir(null);
+    setDirtyRows(new Map());
+    setEditingCell(null);
     reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.key]);
+
+  // ===================== 内联编辑 =====================
+  const canEdit = tab.role === "owner" || tab.role === "editor";
+  const pkCols = useMemo(() => columns.filter((c) => c.is_primary).map((c) => c.name), [columns]);
+  const hasPK = pkCols.length > 0;
+
+  // dirtyRows: Map<rowIndex, Map<colName, newValue>>
+  const [dirtyRows, setDirtyRows] = useState<Map<number, Map<string, string>>>(new Map());
+  const [editingCell, setEditingCell] = useState<{ row: number; col: string } | null>(null);
+  const [editingValue, setEditingValue] = useState<string>("");
+  const editInputRef = useRef<any>(null);
+  const [sqlPreviewOpen, setSqlPreviewOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const dirtyCount = dirtyRows.size;
+
+  const startEdit = (rowIdx: number, colName: string, currentVal: any) => {
+    if (!canEdit || !hasPK) return;
+    setEditingCell({ row: rowIdx, col: colName });
+    setEditingValue(currentVal === null || currentVal === undefined ? "" : String(currentVal));
+    // 焦点交给下面的 useEffect 处理，避免 setTimeout 带来的竞态
+  };
+
+  // editingCell 变化后，等 DOM 完成 commit，再 focus + select。
+  // 用 useEffect 而非 setTimeout 能保证 ref 一定指向最新的 Input，
+  // 也不会因为组件卸载留下悬挂的 timer。
+  useEffect(() => {
+    if (!editingCell) return;
+    const input = editInputRef.current;
+    if (!input) return;
+    // 优先用 antd Input 的 focus({ cursor })，没有时退化为原生 focus + select
+    if (typeof input.focus === "function") {
+      try {
+        input.focus({ cursor: "all" });
+      } catch {
+        input.focus();
+      }
+    }
+    if (typeof input.select === "function") {
+      input.select();
+    }
+  }, [editingCell]);
+
+  const commitEdit = () => {
+    if (!editingCell) return;
+    const { row, col } = editingCell;
+    const originalRow = result?.rows?.[row];
+    const colIdx = result?.columns?.indexOf(col);
+    if (!originalRow || colIdx === undefined || colIdx < 0) {
+      setEditingCell(null);
+      return;
+    }
+    const origVal = originalRow[colIdx];
+    const origStr = origVal === null || origVal === undefined ? "" : String(origVal);
+    const newStr = editingValue;
+
+    setDirtyRows((prev) => {
+      const next = new Map(prev);
+      if (newStr === origStr) {
+        const rowDirty = next.get(row);
+        if (rowDirty) {
+          rowDirty.delete(col);
+          if (rowDirty.size === 0) next.delete(row);
+        }
+      } else {
+        if (!next.has(row)) next.set(row, new Map());
+        next.get(row)!.set(col, newStr);
+      }
+      return next;
+    });
+    setEditingCell(null);
+  };
+
+  const cancelEdit = () => {
+    setEditingCell(null);
+  };
+
+  const discardChanges = () => {
+    setDirtyRows(new Map());
+    setEditingCell(null);
+  };
+
+  // 生成 UPDATE SQL（用 PK 做 WHERE 条件）
+  const generateUpdateSQL = (): string[] => {
+    if (!result?.columns || !result.rows || pkCols.length === 0) return [];
+    const stmts: string[] = [];
+    for (const [rowIdx, colChanges] of dirtyRows) {
+      const row = result.rows[rowIdx];
+      if (!row) continue;
+      const setParts: string[] = [];
+      for (const [col, val] of colChanges) {
+        const meta = columns.find((c) => c.name === col);
+        if (val === "") {
+          setParts.push(`"${col}" = NULL`);
+        } else {
+          setParts.push(`"${col}" = ${literalFor(val, meta?.data_type)}`);
+        }
+      }
+      const whereParts: string[] = [];
+      for (const pk of pkCols) {
+        const pkIdx = result.columns.indexOf(pk);
+        if (pkIdx < 0) continue;
+        const pkVal = row[pkIdx];
+        const pkMeta = columns.find((c) => c.name === pk);
+        if (pkVal === null || pkVal === undefined) {
+          whereParts.push(`"${pk}" IS NULL`);
+        } else {
+          whereParts.push(`"${pk}" = ${literalFor(String(pkVal), pkMeta?.data_type)}`);
+        }
+      }
+      stmts.push(
+        `UPDATE "${tab.schema}"."${tab.table}" SET ${setParts.join(", ")} WHERE ${whereParts.join(" AND ")};`
+      );
+    }
+    return stmts;
+  };
+
+  const saveChanges = async () => {
+    const stmts = generateUpdateSQL();
+    if (stmts.length === 0) return;
+    setSaving(true);
+    try {
+      const sql = stmts.join("\n");
+      const res = await api.execute(tab.connID, sql);
+      if (res.error) {
+        message.error("保存失败：" + res.error);
+      } else {
+        const affected = res.results?.reduce((sum, r) => sum + (r.rows_affected ?? 0), 0) ?? 0;
+        message.success(`已保存 ${affected} 行`);
+        setDirtyRows(new Map());
+        setEditingCell(null);
+        await fetchPage(page, pageSize, appliedFilters);
+      }
+    } catch (e: any) {
+      message.error(e?.response?.data?.error ?? "保存失败");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   // 筛选条件操作
   const addFilter = () => {
@@ -426,9 +570,48 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
         ),
         dataIndex: i,
         key: name + "_" + i,
-        ellipsis: true,
-        render: (v: any) =>
-          v === null || v === undefined ? <span style={{ color: "#9ca3af" }}>∅</span> : String(v),
+        ellipsis: editingCell?.col !== name,
+        onCell: (record: any) => ({
+          onDoubleClick: () => {
+            if (canEdit && hasPK) startEdit(record.key, name, record[i]);
+          },
+        }),
+        render: (v: any, record: any) => {
+          const rowIdx = record.key as number;
+          const isEditing = editingCell?.row === rowIdx && editingCell?.col === name;
+          const isDirty = dirtyRows.get(rowIdx)?.has(name);
+          const displayVal = isDirty ? dirtyRows.get(rowIdx)!.get(name)! : v;
+
+          if (isEditing) {
+            return (
+              <Input
+                ref={editInputRef}
+                size="small"
+                value={editingValue}
+                onChange={(e) => setEditingValue(e.target.value)}
+                onPressEnter={commitEdit}
+                onBlur={commitEdit}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") cancelEdit();
+                }}
+                style={{ margin: -4, width: "calc(100% + 8px)" }}
+              />
+            );
+          }
+
+          const cellStyle: React.CSSProperties = isDirty
+            ? { background: "#fef3c7", borderRadius: 2, padding: "0 4px", margin: "-0 -4px" }
+            : {};
+
+          if (displayVal === null || displayVal === undefined || displayVal === "") {
+            return (
+              <span style={{ ...cellStyle, color: "#9ca3af" }}>
+                {displayVal === "" && isDirty ? "(empty)" : "∅"}
+              </span>
+            );
+          }
+          return <span style={cellStyle}>{String(displayVal)}</span>;
+        },
       };
     }) ?? [];
 
@@ -644,6 +827,106 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
           scroll={{ x: "max-content" }}
         />
       </div>
+      {canEdit && hasPK && dirtyCount > 0 && (
+        <div
+          style={{
+            padding: "6px 12px",
+            borderTop: "1px solid #e5e7eb",
+            background: "#fffbeb",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexShrink: 0,
+          }}
+        >
+          <Space>
+            <Button size="small" icon={<UndoOutlined />} onClick={discardChanges}>
+              Discard Changes
+            </Button>
+            <Tag color="orange">{dirtyCount} edited row{dirtyCount > 1 ? "s" : ""}</Tag>
+          </Space>
+          <Space>
+            <Button size="small" icon={<EyeOutlined />} onClick={() => setSqlPreviewOpen(true)}>
+              SQL Preview
+            </Button>
+            <Button
+              size="small"
+              type="primary"
+              icon={<SaveOutlined />}
+              loading={saving}
+              onClick={saveChanges}
+            >
+              Save Changes
+            </Button>
+          </Space>
+        </div>
+      )}
+      {canEdit && !hasPK && dirtyCount === 0 && (
+        <div
+          style={{
+            padding: "4px 12px",
+            borderTop: "1px solid #e5e7eb",
+            background: "#fafbfc",
+            flexShrink: 0,
+          }}
+        >
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            该表无主键，不支持内联编辑。请在 SQL 窗口手动执行 UPDATE。
+          </Typography.Text>
+        </div>
+      )}
+      <Modal
+        title="SQL Preview"
+        open={sqlPreviewOpen}
+        onCancel={() => setSqlPreviewOpen(false)}
+        width={780}
+        footer={[
+          <Button
+            key="copy"
+            icon={<CopyOutlined />}
+            onClick={() => {
+              navigator.clipboard.writeText(generateUpdateSQL().join("\n"));
+              message.success("已复制 SQL");
+            }}
+          >
+            复制
+          </Button>,
+          <Button key="open" onClick={() => {
+            onOpenSQL(generateUpdateSQL().join("\n"));
+            setSqlPreviewOpen(false);
+          }}>
+            在 SQL 窗口打开
+          </Button>,
+          <Button
+            key="exec"
+            type="primary"
+            icon={<SaveOutlined />}
+            loading={saving}
+            onClick={async () => {
+              await saveChanges();
+              setSqlPreviewOpen(false);
+            }}
+          >
+            执行并保存
+          </Button>,
+        ]}
+      >
+        <pre
+          style={{
+            background: "#0f172a",
+            color: "#e2e8f0",
+            padding: 12,
+            borderRadius: 4,
+            maxHeight: 480,
+            overflow: "auto",
+            fontSize: 12,
+            margin: 0,
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {generateUpdateSQL().join("\n") || "(无变更)"}
+        </pre>
+      </Modal>
       <Modal
         title={`DDL · ${tab.schema}.${tab.table}`}
         open={ddlOpen}

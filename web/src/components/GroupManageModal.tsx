@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   App,
   Button,
@@ -37,12 +37,19 @@ export default function GroupManageModal({ open, groups, onClose, onChanged }: P
   const [creating, setCreating] = useState(false);
   const [adding, setAdding] = useState(false);
 
+  const prevOpenRef = useRef(false);
+
   useEffect(() => {
-    if (!open) return;
-    if (groups.length > 0 && activeID === "__create__") {
-      setActiveID(String(groups[0].id));
+    // 仅在 Modal 从关闭变为打开时，自动选中第一个组（如果有的话）
+    if (open && !prevOpenRef.current) {
+      if (groups.length > 0) {
+        setActiveID(String(groups[0].id));
+      } else {
+        setActiveID("__create__");
+      }
     }
-  }, [open, groups, activeID]);
+    prevOpenRef.current = open;
+  }, [open, groups]);
 
   useEffect(() => {
     if (!open) return;
@@ -125,7 +132,6 @@ export default function GroupManageModal({ open, groups, onClose, onChanged }: P
       width={780}
       onCancel={onClose}
       footer={null}
-      destroyOnClose
     >
       <Tabs
         tabPosition="left"
@@ -185,9 +191,9 @@ export default function GroupManageModal({ open, groups, onClose, onChanged }: P
 
                 {isEditorOrAbove ? (
                   <Card size="small" title="邀请 / 更新成员" style={{ marginBottom: 16 }}>
-                    <Form form={memberForm} layout="inline" onFinish={submitAddMember}>
+                    <Form form={memberForm} layout="inline" preserve={false}>
                       <Form.Item name="email" rules={[{ required: true, type: "email" }]}>
-                        <Input placeholder="对方邮箱" autoComplete="off" />
+                        <Input placeholder="对方邮箱" autoComplete="off" onPressEnter={submitAddMember} />
                       </Form.Item>
                       <Form.Item name="role" rules={[{ required: true }]} initialValue="viewer">
                         <Select
@@ -206,7 +212,7 @@ export default function GroupManageModal({ open, groups, onClose, onChanged }: P
                           }
                         />
                       </Form.Item>
-                      <Button type="primary" htmlType="submit" icon={<UserAddOutlined />} loading={adding}>
+                      <Button type="primary" icon={<UserAddOutlined />} loading={adding} onClick={submitAddMember}>
                         {isOwner ? "添加 / 更新" : "邀请"}
                       </Button>
                     </Form>
@@ -263,14 +269,14 @@ export default function GroupManageModal({ open, groups, onClose, onChanged }: P
             key: "__create__",
             label: <Space>+ 新建组</Space>,
             children: (
-              <Form form={createForm} layout="vertical" onFinish={submitCreate}>
+              <Form form={createForm} layout="vertical" preserve={false}>
                 <Form.Item name="name" label="组名称" rules={[{ required: true }]}>
-                  <Input placeholder="如：研发组、运维组" />
+                  <Input placeholder="如：研发组、运维组" onPressEnter={submitCreate} />
                 </Form.Item>
                 <Form.Item name="description" label="描述">
                   <Input.TextArea rows={3} placeholder="可选" />
                 </Form.Item>
-                <Button type="primary" htmlType="submit" loading={creating}>
+                <Button type="primary" loading={creating} onClick={submitCreate}>
                   创建
                 </Button>
               </Form>
