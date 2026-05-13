@@ -48,92 +48,79 @@ func WithDatabase(c *model.Connection, database string) *model.Connection {
 }
 
 // --- 按 driver 分发的公共入口 ---
+//
+// 这些包级函数保留是为了向上层（service / api / cmd）提供稳定的入口；
+// 内部实现全部走 Driver 接口（见 driver.go），每次调用用 Open(c) 拿一个
+// 瘦 Driver 实例，方法透传到具体驱动适配器。池缓存仍由各驱动的全局 map
+// 持有，与 Driver 实例的生命周期解耦。
 
 // ListDatabases 列出实例上的所有数据库。
 func ListDatabases(ctx context.Context, c *model.Connection) ([]DatabaseInfo, error) {
-	switch c.Driver {
-	case "postgres":
-		return pgListDatabases(ctx, c)
-	case "mysql":
-		return mysqlListDatabases(ctx, c)
-	default:
-		return nil, fmt.Errorf("unsupported driver: %s", c.Driver)
+	d, err := Open(c)
+	if err != nil {
+		return nil, err
 	}
+	return d.ListDatabases(ctx)
 }
 
 // ListSchemas 返回当前数据库中的所有 schema。
 func ListSchemas(ctx context.Context, c *model.Connection) ([]Schema, error) {
-	switch c.Driver {
-	case "postgres":
-		return pgListSchemas(ctx, c)
-	case "mysql":
-		return mysqlListSchemas(ctx, c)
-	default:
-		return nil, fmt.Errorf("unsupported driver: %s", c.Driver)
+	d, err := Open(c)
+	if err != nil {
+		return nil, err
 	}
+	return d.ListSchemas(ctx)
 }
 
 // ListTables lists tables/views in a schema.
 func ListTables(ctx context.Context, c *model.Connection, schema string) ([]TableInfo, error) {
-	switch c.Driver {
-	case "postgres":
-		return pgListTables(ctx, c, schema)
-	case "mysql":
-		return mysqlListTables(ctx, c, schema)
-	default:
-		return nil, fmt.Errorf("unsupported driver: %s", c.Driver)
+	d, err := Open(c)
+	if err != nil {
+		return nil, err
 	}
+	return d.ListTables(ctx, schema)
 }
 
 // ListColumns returns columns for a specific table.
 func ListColumns(ctx context.Context, c *model.Connection, schema, table string) ([]ColumnInfo, error) {
-	switch c.Driver {
-	case "postgres":
-		return pgListColumns(ctx, c, schema, table)
-	case "mysql":
-		return mysqlListColumns(ctx, c, schema, table)
-	default:
-		return nil, fmt.Errorf("unsupported driver: %s", c.Driver)
+	d, err := Open(c)
+	if err != nil {
+		return nil, err
 	}
+	return d.ListColumns(ctx, schema, table)
 }
 
 // GenerateTableDDL 生成可读的表 DDL（列定义 + 主键 + 索引 + 注释）。
 func GenerateTableDDL(ctx context.Context, c *model.Connection, schema, table string) (string, error) {
-	switch c.Driver {
-	case "postgres":
-		return pgGenerateTableDDL(ctx, c, schema, table)
-	case "mysql":
-		return mysqlGenerateTableDDL(ctx, c, schema, table)
-	default:
-		return "", fmt.Errorf("unsupported driver: %s", c.Driver)
+	d, err := Open(c)
+	if err != nil {
+		return "", err
 	}
+	return d.GenerateTableDDL(ctx, schema, table)
 }
 
 // Ping tests the connection without caching.
 func Ping(ctx context.Context, c *model.Connection) error {
-	switch c.Driver {
-	case "postgres":
-		return pgPing(ctx, c)
-	case "mysql":
-		return mysqlPing(ctx, c)
-	default:
-		return fmt.Errorf("unsupported driver: %s", c.Driver)
+	d, err := Open(c)
+	if err != nil {
+		return err
 	}
+	return d.Ping(ctx)
 }
 
 // Exec runs one SQL statement and returns a result.
 func Exec(ctx context.Context, c *model.Connection, sql string, args ...any) (*QueryResult, error) {
-	switch c.Driver {
-	case "postgres":
-		return pgExec(ctx, c, sql, args...)
-	case "mysql":
-		return mysqlExec(ctx, c, sql, args...)
-	default:
-		return nil, fmt.Errorf("unsupported driver: %s", c.Driver)
+	d, err := Open(c)
+	if err != nil {
+		return nil, err
 	}
+	return d.Exec(ctx, sql, args...)
 }
 
 // InvalidatePool should be called after a connection is updated or deleted.
+//
+// 目前仍广播到所有已注册驱动（pg + mysql + ssh 隧道），而不是只调一个驱动，
+// 因为调用方通常只有 connID 而没有 Driver 名；广播是幂等的、代价极低。
 func InvalidatePool(connID uint) {
 	pgInvalidatePool(connID)
 	mysqlInvalidatePool(connID)

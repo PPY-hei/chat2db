@@ -6,6 +6,7 @@ import (
 	"github.com/chy/chat2db/server/internal/config"
 	cryptopkg "github.com/chy/chat2db/server/internal/crypto"
 	"github.com/chy/chat2db/server/internal/db"
+	"github.com/chy/chat2db/server/internal/dbexec"
 	"github.com/chy/chat2db/server/internal/model"
 )
 
@@ -49,19 +50,17 @@ func CreateConnection(actorID, groupID uint, in ConnectionInput) (*model.Connect
 	if in.Driver == "" {
 		in.Driver = "postgres"
 	}
-	if in.Driver != "postgres" && in.Driver != "mysql" {
-		return nil, errors.New("only postgres and mysql are supported")
+	// Open 通过注册表验证驱动合法性，同时拿到 Capabilities 以填默认端口。
+	// 把"支持哪些 driver"这一真相源收敛到 dbexec registry。
+	driver, err := dbexec.Open(&model.Connection{Driver: in.Driver})
+	if err != nil {
+		return nil, err
 	}
 	if in.Name == "" || in.Host == "" || in.Database == "" || in.Username == "" {
 		return nil, errors.New("name, host, database, username are required")
 	}
 	if in.Port == 0 {
-		switch in.Driver {
-		case "postgres":
-			in.Port = 5432
-		case "mysql":
-			in.Port = 3306
-		}
+		in.Port = driver.Capabilities().DefaultPort
 	}
 	if in.SSLMode == "" {
 		in.SSLMode = "disable"
@@ -268,11 +267,6 @@ func GetConnection(actorID, connID uint) (*model.Connection, model.Role, error) 
 		return nil, "", err
 	}
 	return &c, role, nil
-}
-
-// DecryptPassword decrypts the stored credential password.
-func DecryptPassword(c *model.Connection) (string, error) {
-	return cryptopkg.DecryptString(c.PasswordEnc, config.Get().CredentialKey)
 }
 
 // EncryptForTest encrypts a plaintext password for an in-memory connection

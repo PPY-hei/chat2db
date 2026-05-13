@@ -13,7 +13,6 @@ import (
 	"github.com/chy/chat2db/server/internal/config"
 	cryptopkg "github.com/chy/chat2db/server/internal/crypto"
 	"github.com/chy/chat2db/server/internal/model"
-	"github.com/chy/chat2db/server/internal/service"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -38,7 +37,7 @@ var (
 // dsnFor builds a pgx DSN from the model.Connection.
 // host and port should already be resolved (e.g. via getSSHTunnel).
 func dsnFor(c *model.Connection, host string, port int) (string, error) {
-	pwd, err := service.DecryptPassword(c)
+	pwd, err := decryptConnPassword(c)
 	if err != nil {
 		return "", err
 	}

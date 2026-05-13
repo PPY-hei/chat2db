@@ -13,7 +13,6 @@ import (
 	"github.com/chy/chat2db/server/internal/config"
 	cryptopkg "github.com/chy/chat2db/server/internal/crypto"
 	"github.com/chy/chat2db/server/internal/model"
-	"github.com/chy/chat2db/server/internal/service"
 	mysqldriver "github.com/go-sql-driver/mysql"
 )
 
@@ -36,7 +35,7 @@ var (
 // mysqlDSN builds a MySQL DSN from the model.Connection using mysql.Config
 // to properly escape special characters in username/password.
 func mysqlDSN(c *model.Connection) (string, error) {
-	pwd, err := service.DecryptPassword(c)
+	pwd, err := decryptConnPassword(c)
 	if err != nil {
 		return "", err
 	}
