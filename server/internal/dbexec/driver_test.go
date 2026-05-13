@@ -126,3 +126,55 @@ func TestBuiltinDriversRegistered(t *testing.T) {
 		}
 	}
 }
+
+func TestListDrivers_BuiltinsAndSorted(t *testing.T) {
+	got := ListDrivers()
+	if len(got) < 2 {
+		t.Fatalf("ListDrivers returned %d entries, want >=2", len(got))
+	}
+
+	// Names must be sorted ascending — frontends rely on stable order.
+	for i := 1; i < len(got); i++ {
+		if got[i-1].Name >= got[i].Name {
+			names := make([]string, len(got))
+			for j, d := range got {
+				names[j] = d.Name
+			}
+			t.Fatalf("ListDrivers not sorted: %v", names)
+		}
+	}
+
+	// Built-ins must be present with sensible capabilities.
+	byName := map[string]DriverInfo{}
+	for _, d := range got {
+		byName[d.Name] = d
+	}
+	if pg, ok := byName["postgres"]; !ok {
+		t.Fatalf("postgres missing from ListDrivers")
+	} else if pg.DefaultPort != 5432 {
+		t.Errorf("postgres DefaultPort = %d, want 5432", pg.DefaultPort)
+	}
+	if my, ok := byName["mysql"]; !ok {
+		t.Fatalf("mysql missing from ListDrivers")
+	} else if my.DefaultPort != 3306 {
+		t.Errorf("mysql DefaultPort = %d, want 3306", my.DefaultPort)
+	}
+}
+
+func TestListDrivers_RespectsCustomRegistry(t *testing.T) {
+	withTempRegistry(t, func() {
+		Register("zeta", func(c *model.Connection) (Driver, error) {
+			return &stubDriver{conn: c}, nil
+		})
+		Register("alpha", func(c *model.Connection) (Driver, error) {
+			return &stubDriver{conn: c}, nil
+		})
+		got := ListDrivers()
+		if len(got) != 2 {
+			t.Fatalf("got %d drivers, want 2", len(got))
+		}
+		if got[0].Name != "alpha" || got[1].Name != "zeta" {
+			t.Errorf("got %v, want [alpha, zeta]", []string{got[0].Name, got[1].Name})
+		}
+	})
+}

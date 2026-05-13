@@ -23,6 +23,8 @@ func RegisterRoutes(r *gin.Engine) {
 	api := r.Group("/api")
 	api.POST("/auth/register", Register)
 	api.POST("/auth/login", Login)
+	// 驱动能力描述：无状态只读，不需要鉴权；前端登录页构造连接表单会用到。
+	api.GET("/drivers", ListDrivers)
 
 	authed := api.Group("/")
 	authed.Use(middleware.AuthRequired())
