@@ -90,6 +90,17 @@ export interface ExecuteResponse {
   failed_sql?: string;
 }
 
+// DriverInfo 对应后端 dbexec.DriverInfo（GET /api/drivers）。
+// 字段与 Capabilities embedded JSON 一一对应，新增字段不要 breaking 旧字段。
+export interface DriverInfo {
+  name: string;
+  default_port: number;
+  ssl_modes: string[];
+  supports_ssh: boolean;
+  supports_mtls: boolean;
+  schema_support: boolean;
+}
+
 export interface SavedQuery {
   id: number;
   group_id: number;
