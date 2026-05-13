@@ -299,6 +299,15 @@ type testConnReq struct {
 	Draft        *service.ConnectionInput `json:"draft,omitempty"`
 }
 
+// ListDrivers 返回已注册的数据源驱动及其 Capabilities，供前端动态渲染
+// 连接表单（端口占位、SSL 下拉、SSH/mTLS 显隐等）。
+//
+// 这是一个无状态、无用户维度数据的只读接口，因此挂在公开路径上，
+// 便于登录页的"新建连接 / 测试连接"在未登录时也能拿到驱动列表。
+func ListDrivers(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"drivers": dbexec.ListDrivers()})
+}
+
 func TestConnection(c *gin.Context) {
 	uid := middleware.CurrentUserID(c)
 	var in testConnReq

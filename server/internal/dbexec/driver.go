@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/chy/chat2db/server/internal/model"
 )
@@ -118,4 +119,41 @@ func Open(c *model.Connection) (Driver, error) {
 		return nil, fmt.Errorf("%w: %q", ErrUnsupportedDriver, c.Driver)
 	}
 	return f(c)
+}
+
+// DriverInfo 是 "name + capabilities" 的组合，用于对外描述已注册的驱动。
+// 字段名与 Capabilities 的 JSON tag 平级拼接，便于直接序列化给前端。
+type DriverInfo struct {
+	Name string `json:"name"`
+	Capabilities
+}
+
+// ListDrivers 枚举所有已注册的驱动及其 Capabilities，按 name 字典序返回。
+// 排序保证前端可以稳定缓存，也方便测试断言。
+//
+// 构造一个零值 Connection 只是为了复用 Factory 拿到 Capabilities——
+// Capabilities 本身是静态声明，不应该触发任何 I/O。
+func ListDrivers() []DriverInfo {
+	names := make([]string, 0, len(registry))
+	for name := range registry {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	out := make([]DriverInfo, 0, len(names))
+	for _, name := range names {
+		f := registry[name]
+		d, err := f(&model.Connection{Driver: name})
+		if err != nil || d == nil {
+			// Capabilities 声明是静态的，理论上不会失败；万一某个 Factory
+			// 将来做了 DSN 预校验，这里传空 Connection 可能出错——
+			// 我们选择跳过而不是 panic，保持接口的"只读元信息"语义。
+			continue
+		}
+		out = append(out, DriverInfo{
+			Name:         name,
+			Capabilities: d.Capabilities(),
+		})
+	}
+	return out
 }
