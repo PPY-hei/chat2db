@@ -70,6 +70,61 @@ services:
       timeout: 3s
       retries: 20
 
+  # Integration-test profiles. These instances exist purely to back the
+  # `//go:build integration` contract tests in internal/dbexec. They use
+  # different host ports from the metadata DB profiles above so they can
+  # run side-by-side with a local metadata database on 3306/5432.
+  #
+  # Usage:
+  #   docker compose --profile test up -d
+  #   cd server && \
+  #     PG_TEST_DSN="postgres://chat2db:chat2db@127.0.0.1:5433/chat2db?sslmode=disable" \
+  #     MYSQL_TEST_DSN="chat2db:chat2db@tcp(127.0.0.1:3307)/chat2db?parseTime=true&loc=Local&charset=utf8mb4" \
+  #     go test -tags=integration ./internal/dbexec/... -count=1
+
+  chat2db-postgres-test:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    profiles: ["test"]
+    container_name: chat2db-postgres-test
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: chat2db
+      POSTGRES_USER: chat2db
+      POSTGRES_PASSWORD: chat2db
+    ports:
+      - "5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chat2db -d chat2db"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  chat2db-mysql-test:
+    image: ${MYSQL_IMAGE:-mysql:8.4}
+    profiles: ["test"]
+    container_name: chat2db-mysql-test
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: chat2db
+      MYSQL_USER: chat2db
+      MYSQL_PASSWORD: chat2db
+      MYSQL_ROOT_PASSWORD: chat2db-root
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_bin
+      - --default-time-zone=+00:00
+    ports:
+      - "3307:3306"
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uchat2db", "-pchat2db"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
   # Placeholder for Milestone 2. Once the official Dockerfile lands, this
   # service will consume the profiles above by adding e.g.:
   #
