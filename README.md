@@ -290,6 +290,67 @@ npm run preview         # 本地预览构建结果
 
 ## 生产部署
 
+### 选择元数据库驱动
+
+应用自身的数据（账号、组、连接、收藏 SQL 等）**不等于**你要管理的业务库，它有自己的元数据库。启动时通过 `META_DB_DRIVER` 选择：
+
+| Driver | 适合场景 | 说明 |
+|--------|----------|------|
+| `sqlite` | 单机 / 内网 / 小团队，零配置优先 | 走 GORM AutoMigrate，无需迁移工具；文件落在 `META_DB_DSN` 指定路径 |
+| `postgres` | 多实例部署 / 审计量大 / 企业治理 | 启动时用 golang-migrate 执行内嵌 SQL（`internal/db/migrations/postgres/`） |
+| `mysql` | 与现有 MySQL 基础设施统一 | 同上，migration 位于 `internal/db/migrations/mysql/`，migration 期间短连接带 `multiStatements=true`，业务连接池不启用该参数 |
+
+常见启动方式：
+
+```bash
+# SQLite（默认，零配置）
+META_DB_DRIVER=sqlite \
+META_DB_DSN=./data/chat2db.db \
+./chat2db-server
+
+# PostgreSQL
+META_DB_DRIVER=postgres \
+META_DB_DSN="postgres://chat2db:chat2db@pg-host:5432/chat2db?sslmode=disable" \
+./chat2db-server
+
+# MySQL（注意 parseTime=true）
+META_DB_DRIVER=mysql \
+META_DB_DSN="chat2db:chat2db@tcp(mysql-host:3306)/chat2db?parseTime=true&loc=Local&charset=utf8mb4" \
+./chat2db-server
+```
+
+本地想快速拉起一个 PG / MySQL 用来联调：
+
+```bash
+# Docker Compose 自带 PG / MySQL 两个 profile，默认什么都不启
+docker compose --profile postgres up -d
+docker compose --profile mysql    up -d
+
+# 然后在本机直接 go run ./cmd/server，并把 META_DB_DSN 指向容器
+```
+
+### Migration 策略
+
+- **sqlite**：`META_DB_AUTO_MIGRATE=true`（默认）走 GORM AutoMigrate，无需额外步骤。
+- **postgres / mysql**：`META_DB_AUTO_MIGRATE=true`（默认）会在启动时执行 `internal/db/migrations/<driver>/` 下的迁移文件，通过 `schema_migrations` 表幂等。如果企业流程要求把迁移交给 DBA，设 `META_DB_AUTO_MIGRATE=false`，启动时应用只校验五张核心表是否存在，不存在直接 fatal。
+- 任何一次对 `server/internal/model/model.go` 的改动，都必须同步在 `migrations/postgres` 与 `migrations/mysql` 各写一对 `NNNNNN_xxx.up.sql` / `.down.sql`。
+- 若 migration 中途失败（`Dirty database version ...`），按 golang-migrate 标准流程：`migrate -path ... -database ... force <last-good-version>`，然后修正 SQL 重跑。
+
+### 从 SQLite 迁移到 PG / MySQL（一次性手册骨架）
+
+正式一键工具不在当前版本提供，推荐以下手工流程：
+
+1. **停机**：下掉 chat2db 进程，避免迁移中途有新数据写入。
+2. **备份**：拷贝 `META_DB_PATH` 对应的 `chat2db.db` 文件。
+3. **准备目标库**：创建空的 PG/MySQL database（按上一节 DSN 里的名字）。
+4. **应用 schema**：临时用 `META_DB_DRIVER=postgres|mysql` 启动一次 chat2db 让它 migrate up，或直接用 `golang-migrate` CLI 执行 `internal/db/migrations/<driver>/`。
+5. **数据搬迁**：使用 `sqlite3 chat2db.db .dump` 导出，做列名/类型方言替换（BOOLEAN、时间字段等），再 `psql` / `mysql` 导入；或写一个 Go 小脚本读 SQLite 逐表写入目标库。
+6. **校验**：对比 `SELECT COUNT(*)`、抽样对比 `users / groups / connections / saved_queries`；尝试用原账号登录。
+7. **切换**：修改 chat2db 启动的 `META_DB_DRIVER / META_DB_DSN`，重新拉起。
+8. **灰度观察**：保留 SQLite 文件至少一个保留周期再删除。
+
+> ⚠️ 注意：SQLite 与 PG/MySQL 的时间精度和布尔类型表示不同，迁移数据时务必显式处理；`CREDENTIAL_KEY` **不要**改变，否则所有加密字段都会解不开。
+
 ### 方式 A：二进制 + 静态托管
 
 ```bash
@@ -386,11 +447,17 @@ server {
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `SERVER_ADDR` | `:8080` | 监听地址 |
-| `SERVER_MODE` | `debug` | `debug` / `release`（对应 gin 模式） |
-| `META_DB_PATH` | `./data/chat2db.db` | 应用元数据 SQLite 路径 |
-| `JWT_SECRET` | `please-change-me-in-production` | JWT 签名密钥，**生产务必替换** |
+| `SERVER_MODE` | `debug` | `debug` / `release`（对应 gin 模式）。`release` 下若 `JWT_SECRET` / `CREDENTIAL_KEY` 仍为默认占位值，启动即失败 |
+| `META_DB_DRIVER` | `sqlite` | 元数据库驱动：`sqlite` / `postgres` / `mysql` |
+| `META_DB_DSN` | `./data/chat2db.db`（仅 sqlite 缺省） | 元数据库连接串。PG 形如 `postgres://user:pass@host:5432/db?sslmode=disable`，MySQL 形如 `user:pass@tcp(host:3306)/db?parseTime=true&loc=Local&charset=utf8mb4` |
+| `META_DB_PATH` | `./data/chat2db.db` | **Deprecated**：仅 `META_DB_DRIVER=sqlite` 时用作 `META_DB_DSN` 的兼容回退，新部署请直接用 `META_DB_DSN` |
+| `META_DB_MAX_OPEN_CONNS` | `20` | 元数据库最大连接数（sqlite 下忽略） |
+| `META_DB_MAX_IDLE_CONNS` | `5` | 元数据库空闲连接数 |
+| `META_DB_CONN_MAX_LIFETIME` | `1h` | 元数据库连接最大生命周期，Go duration 格式 |
+| `META_DB_AUTO_MIGRATE` | `true` | sqlite 下使用 GORM AutoMigrate；pg/mysql 下启动时执行 golang-migrate up。生产若迁移已 out-of-band 跑过，可设为 `false`，启动时只做 schema 一致性校验 |
+| `JWT_SECRET` | `please-change-me-in-production` | JWT 签名密钥，**生产务必替换**；release 模式下必须覆盖 |
 | `JWT_EXPIRE_HOURS` | `72` | JWT 有效期 |
-| `CREDENTIAL_KEY` | 占位 32 字节 | AES-256-GCM 主密钥，**必须 ≥ 32 字节**，用于加密 DB 密码与 LLM API Key |
+| `CREDENTIAL_KEY` | 占位 32 字节 | AES-256-GCM 主密钥，**必须 ≥ 32 字节**，用于加密 DB 密码与 LLM API Key；release 模式下必须覆盖 |
 | `QUERY_MAX_ROWS` | `1000` | 单次 SQL 执行最多返回行数，超出会标记 `truncated` |
 | `QUERY_TIMEOUT_SECONDS` | `30` | 单次 SQL 执行超时 |
 

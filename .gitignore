@@ -36,3 +36,5 @@ yarn-error.log*
 *.out
 coverage.out
 web/node_modules
+
+ITERATION_PLAN.md

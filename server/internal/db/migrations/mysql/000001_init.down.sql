@@ -1,0 +1,5 @@
+DROP TABLE IF EXISTS `saved_queries`;
+DROP TABLE IF EXISTS `connections`;
+DROP TABLE IF EXISTS `group_members`;
+DROP TABLE IF EXISTS `groups`;
+DROP TABLE IF EXISTS `users`;

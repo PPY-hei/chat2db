@@ -1,0 +1,92 @@
+# Chat2DB metadata database profiles.
+#
+# Step 1 of the "pluggable meta database" rollout: this file is focused on
+# spinning up a PostgreSQL or MySQL instance that chat2db can point at via
+# META_DB_DRIVER + META_DB_DSN while running locally (`go run ./...`).
+#
+# The official chat2db app container will land in Milestone 2 (Dockerfile +
+# one-shot deployment). Until then the `chat2db` service below is commented
+# out on purpose.
+#
+# Usage:
+#   docker compose --profile postgres up -d
+#   docker compose --profile mysql    up -d
+#
+# Then run the backend locally:
+#   # Postgres
+#   META_DB_DRIVER=postgres \
+#   META_DB_DSN="postgres://chat2db:chat2db@localhost:5432/chat2db?sslmode=disable" \
+#   go run ./cmd/server
+#
+#   # MySQL
+#   META_DB_DRIVER=mysql \
+#   META_DB_DSN="chat2db:chat2db@tcp(localhost:3306)/chat2db?parseTime=true&loc=Local&charset=utf8mb4" \
+#   go run ./cmd/server
+#
+# Default (no profile) keeps SQLite behavior — nothing starts; the app uses
+# ./data/chat2db.db as before.
+
+services:
+  chat2db-postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    profiles: ["postgres"]
+    container_name: chat2db-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: chat2db
+      POSTGRES_USER: chat2db
+      POSTGRES_PASSWORD: chat2db
+    ports:
+      - "5432:5432"
+    volumes:
+      - chat2db-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chat2db -d chat2db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  chat2db-mysql:
+    image: ${MYSQL_IMAGE:-mysql:8.4}
+    profiles: ["mysql"]
+    container_name: chat2db-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: chat2db
+      MYSQL_USER: chat2db
+      MYSQL_PASSWORD: chat2db
+      MYSQL_ROOT_PASSWORD: chat2db-root
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_bin
+      - --default-time-zone=+00:00
+    ports:
+      - "3306:3306"
+    volumes:
+      - chat2db-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uchat2db", "-pchat2db"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Placeholder for Milestone 2. Once the official Dockerfile lands, this
+  # service will consume the profiles above by adding e.g.:
+  #
+  #   profiles: ["postgres"]
+  #   depends_on:
+  #     chat2db-postgres:
+  #       condition: service_healthy
+  #
+  # chat2db:
+  #   build: .
+  #   environment:
+  #     META_DB_DRIVER: postgres
+  #     META_DB_DSN: "postgres://chat2db:chat2db@chat2db-postgres:5432/chat2db?sslmode=disable"
+  #     SERVER_MODE: debug
+  #   ports:
+  #     - "8080:8080"
+
+volumes:
+  chat2db-postgres-data:
+  chat2db-mysql-data:
