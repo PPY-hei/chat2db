@@ -2,6 +2,7 @@ import axios, { AxiosInstance } from "axios";
 import type {
   Connection,
   ColumnInfo,
+  DriverInfo,
   ExecuteResponse,
   Group,
   Member,
@@ -47,6 +48,10 @@ http.interceptors.response.use(
 );
 
 export const api = {
+  // drivers（公开接口，未登录时也可用，供连接表单动态渲染）
+  listDrivers: () =>
+    http.get<{ drivers: DriverInfo[] }>("/drivers").then((r) => r.data.drivers),
+
   // auth
   register: (email: string, name: string, password: string) =>
     http.post<{ token: string }>("/auth/register", { email, name, password }).then((r) => r.data),

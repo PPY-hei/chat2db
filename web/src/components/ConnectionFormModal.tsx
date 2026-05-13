@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   App,
   Button,
@@ -16,7 +16,7 @@ import {
 } from "antd";
 import { UploadOutlined } from "@ant-design/icons";
 import { api } from "../api";
-import type { Connection } from "../types";
+import type { Connection, DriverInfo } from "../types";
 
 interface Props {
   open: boolean;
@@ -36,6 +36,15 @@ function readFileAsText(file: File): Promise<string> {
   });
 }
 
+// 给已知驱动一个友好 label；未知驱动回落到 name，保证后端新增驱动时前端自动识别。
+const DRIVER_LABELS: Record<string, string> = {
+  postgres: "PostgreSQL",
+  mysql: "MySQL",
+};
+function driverLabel(name: string): string {
+  return DRIVER_LABELS[name] ?? name;
+}
+
 export default function ConnectionFormModal({ open, groupID, editing, onClose, onSaved }: Props) {
   const [form] = Form.useForm();
   const { message } = App.useApp();
@@ -45,8 +54,29 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
   const [sshAuthMethod, setSSHAuthMethod] = useState<string>("password");
   const [sslMode, setSSLMode] = useState<string>("disable");
   const [driver, setDriver] = useState<string>("postgres");
-  // 记住 PG 的 sslMode，切到 MySQL 再切回时恢复
-  const [pgSSLMode, setPgSSLMode] = useState<string>("disable");
+  // 每个 driver 独立记忆 sslMode，切回时恢复（通用于任意驱动，不再只对 PG 特化）
+  const [sslModeByDriver, setSSLModeByDriver] = useState<Record<string, string>>({});
+
+  // 可用驱动列表来自后端 GET /api/drivers，真相源收敛在 dbexec registry
+  const [drivers, setDrivers] = useState<DriverInfo[]>([]);
+  const [driversLoading, setDriversLoading] = useState(false);
+
+  const driversByName = useMemo(() => {
+    const m: Record<string, DriverInfo> = {};
+    for (const d of drivers) m[d.name] = d;
+    return m;
+  }, [drivers]);
+
+  // 打开对话框时拉取驱动列表（打开一次缓存一次即可；如需强刷改成 open 依赖）
+  useEffect(() => {
+    if (!open || drivers.length > 0) return;
+    setDriversLoading(true);
+    api
+      .listDrivers()
+      .then(setDrivers)
+      .catch((e: any) => message.error("加载驱动列表失败：" + (e?.message ?? "unknown")))
+      .finally(() => setDriversLoading(false));
+  }, [open, drivers.length, message]);
 
   useEffect(() => {
     if (!open) return;
@@ -68,23 +98,25 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
       setSSHEnabled(!!editing.ssh_enabled);
       setSSHAuthMethod(editing.ssh_auth_method || "password");
       setSSLMode(editing.ssl_mode || "disable");
-      setDriver(editing.driver || "postgres");
+      setDriver(editing.driver || "");
     } else {
+      // 新建：等 drivers 加载完后再填默认值，避免先渲染空表单又被覆盖
+      const firstDriver = drivers[0];
       form.resetFields();
       form.setFieldsValue({
-        driver: "postgres",
-        port: 5432,
-        ssl_mode: "disable",
+        driver: firstDriver?.name ?? "",
+        port: firstDriver?.default_port ?? undefined,
+        ssl_mode: firstDriver?.ssl_modes?.[0] ?? "disable",
         ssh_enabled: false,
         ssh_port: 22,
         ssh_auth_method: "password",
       });
       setSSHEnabled(false);
       setSSHAuthMethod("password");
-      setSSLMode("disable");
-      setDriver("postgres");
+      setSSLMode(firstDriver?.ssl_modes?.[0] ?? "disable");
+      setDriver(firstDriver?.name ?? "");
     }
-  }, [open, editing, form]);
+  }, [open, editing, form, drivers]);
 
   const submit = async () => {
     const v = await form.validateFields();
@@ -161,6 +193,13 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
   };
 
   const needCerts = sslMode === "verify-ca" || sslMode === "verify-full";
+  const currentDriver = driversByName[driver];
+  // 驱动能力：未拿到时回落到"全开"避免误隐藏 UI；拿到后严格按 Capabilities 显隐
+  const supportsSSH = currentDriver ? currentDriver.supports_ssh : true;
+  const supportsMTLS = currentDriver ? currentDriver.supports_mtls : true;
+  const sslOptions = currentDriver?.ssl_modes?.length
+    ? currentDriver.ssl_modes.map((s) => ({ label: s, value: s }))
+    : [{ label: "disable", value: "disable" }];
 
   return (
     <Modal
@@ -189,27 +228,27 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
         <Space.Compact block>
           <Form.Item name="driver" label="驱动" style={{ width: "30%" }} rules={[{ required: true }]}>
             <Select
-              options={[
-                { label: "PostgreSQL", value: "postgres" },
-                { label: "MySQL", value: "mysql" },
-              ]}
+              loading={driversLoading}
+              options={drivers.map((d) => ({ label: driverLabel(d.name), value: d.name }))}
               onChange={(v: string) => {
                 const prevDriver = driver;
                 setDriver(v);
-                const defaultPort = v === "mysql" ? 3306 : 5432;
-                form.setFieldsValue({ port: defaultPort });
-                if (v === "mysql") {
-                  // 保存当前 PG 的 sslMode，切到 MySQL 时强制 disable
-                  if (prevDriver === "postgres") {
-                    setPgSSLMode(sslMode);
-                  }
-                  form.setFieldsValue({ ssl_mode: "disable" });
-                  setSSLMode("disable");
-                } else if (v === "postgres" && prevDriver === "mysql") {
-                  // 切回 PG 时恢复之前的 sslMode
-                  form.setFieldsValue({ ssl_mode: pgSSLMode });
-                  setSSLMode(pgSSLMode);
+                // 默认端口：来自后端 Capabilities，避免前端硬编码
+                const next = driversByName[v];
+                if (next?.default_port) {
+                  form.setFieldsValue({ port: next.default_port });
                 }
+                // SSL 模式：保存上一驱动的选择，恢复目标驱动上次的选择；
+                // 若目标驱动不再支持当前模式，回落到该驱动的首个模式或 disable。
+                setSSLModeByDriver((prev) => ({ ...prev, [prevDriver]: sslMode }));
+                const remembered = sslModeByDriver[v];
+                const allowed = next?.ssl_modes ?? [];
+                let nextSSL = remembered ?? allowed[0] ?? "disable";
+                if (allowed.length > 0 && !allowed.includes(nextSSL)) {
+                  nextSSL = allowed[0];
+                }
+                form.setFieldsValue({ ssl_mode: nextSSL });
+                setSSLMode(nextSSL);
               }}
             />
           </Form.Item>
@@ -225,21 +264,7 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
             <Input placeholder="postgres" />
           </Form.Item>
           <Form.Item name="ssl_mode" label="SSL 模式" style={{ width: "50%" }}>
-            <Select
-              options={
-                driver === "mysql"
-                  ? [
-                      { label: "disable", value: "disable" },
-                      { label: "require (skip-verify)", value: "require" },
-                      { label: "verify-ca", value: "verify-ca" },
-                    ]
-                  : ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"].map((s) => ({
-                      label: s,
-                      value: s,
-                    }))
-              }
-              onChange={(v) => setSSLMode(v)}
-            />
+            <Select options={sslOptions} onChange={(v) => setSSLMode(v)} />
           </Form.Item>
         </Space.Compact>
         <Space.Compact block>
@@ -251,7 +276,8 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
           </Form.Item>
         </Space.Compact>
 
-        {/* SSL 证书 */}
+        {/* SSL 证书（仅 mTLS 驱动展示） */}
+        {supportsMTLS && (
         <Collapse
           ghost
           size="small"
@@ -304,8 +330,10 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
             },
           ]}
         />
+        )}
 
-        {/* SSH 隧道 */}
+        {/* SSH 隧道（仅支持 SSH 的驱动展示） */}
+        {supportsSSH && (
         <Collapse
           ghost
           size="small"
@@ -388,6 +416,7 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
             },
           ]}
         />
+        )}
       </Form>
     </Modal>
   );
