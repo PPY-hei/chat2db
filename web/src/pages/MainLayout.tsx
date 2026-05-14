@@ -33,6 +33,7 @@ import type { DataNode } from "antd/es/tree";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { Connection, Group, Role, TableInfo } from "../types";
+import { canManageGroup } from "../utils/role";
 import { useAuth } from "../store";
 import GroupManageModal from "../components/GroupManageModal";
 import ConnectionFormModal from "../components/ConnectionFormModal";
@@ -230,7 +231,7 @@ export default function MainLayout() {
                 }}
               />
             </Tooltip>
-            {g.role === "owner" && (
+            {canManageGroup(g.role) && (
               <Tooltip title="新建连接">
                 <Button
                   size="small"
@@ -277,7 +278,7 @@ export default function MainLayout() {
               const items: any[] = [
                 { key: "refresh", label: "刷新数据库列表" },
               ];
-              if (g.role === "owner") {
+              if (canManageGroup(g.role)) {
                 items.push(
                   { key: "edit", label: "编辑连接" },
                   { key: "test", label: "测试连接" },

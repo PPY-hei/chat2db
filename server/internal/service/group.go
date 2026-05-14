@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/chy/chat2db/server/internal/db"
 	"github.com/chy/chat2db/server/internal/model"
@@ -128,25 +129,24 @@ func RequireRole(userID, groupID uint, minimum model.Role) (model.Role, error) {
 	return role, nil
 }
 
+// roleRank 维护角色等级：owner > admin > editor > viewer。
+// 与前端 web/src/utils/role.ts 的 RANK 保持一致。
+var roleRank = map[model.Role]int{
+	model.RoleViewer: 1,
+	model.RoleEditor: 2,
+	model.RoleAdmin:  3,
+	model.RoleOwner:  4,
+}
+
 func roleAtLeast(have, want model.Role) bool {
-	rank := func(r model.Role) int {
-		switch r {
-		case model.RoleViewer:
-			return 1
-		case model.RoleEditor:
-			return 2
-		case model.RoleOwner:
-			return 3
-		}
-		return 0
-	}
-	return rank(have) >= rank(want)
+	return roleRank[have] >= roleRank[want]
 }
 
 // AddMember 添加（或更新）成员。
 // 权限规则：
 //   - Owner 可随意添加任意角色；修改任意成员角色。
-//   - Editor 可**邀请**新成员（仅 viewer / editor），不可邀请 owner；不可对已存在的成员降/提权。
+//   - Admin / Editor 可**邀请**新成员（仅 viewer / editor），不可邀请 owner / admin；
+//     不可对已存在的成员降/提权。
 //   - Viewer 不可操作。
 func AddMember(actorID, groupID, userID uint, role model.Role) error {
 	if !role.Valid() {
@@ -156,9 +156,9 @@ func AddMember(actorID, groupID, userID uint, role model.Role) error {
 	if err != nil {
 		return err
 	}
-	// Editor 不能邀请 Owner
-	if actorRole == model.RoleEditor && role == model.RoleOwner {
-		return errors.New("editor cannot grant owner role")
+	// 只有 Owner 可以授予 Owner / Admin 角色
+	if (role == model.RoleOwner || role == model.RoleAdmin) && !actorRole.CanManage() {
+		return fmt.Errorf("only owner can grant %s role", role)
 	}
 	if userID == actorID && role != model.RoleOwner {
 		return errors.New("owner cannot demote themselves; transfer ownership first")
@@ -171,10 +171,9 @@ func AddMember(actorID, groupID, userID uint, role model.Role) error {
 	if err != nil {
 		return err
 	}
-	// Editor 不能修改已有成员的角色（避免把别人改成 Owner 绕过上面的检查，
-	// 或把现有 Owner 降级）。
-	if actorRole == model.RoleEditor && existing.Role != role {
-		return errors.New("editor cannot modify existing member role, ask an owner")
+	// 非 Owner 不能修改已有成员的角色（避免 Admin/Editor 改现有成员的角色绕过上面的检查）。
+	if !actorRole.CanManage() && existing.Role != role {
+		return errors.New("only owner can modify existing member role")
 	}
 	existing.Role = role
 	return db.Meta().Save(&existing).Error

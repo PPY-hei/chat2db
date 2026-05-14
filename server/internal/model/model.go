@@ -25,23 +25,39 @@ type User struct {
 type Role string
 
 const (
-	RoleOwner  Role = "owner"
+	RoleOwner Role = "owner"
+	// RoleAdmin sits between Owner and Editor:
+	//   - SQL-wise equivalent to Owner (CREATE / ALTER / DROP / TRUNCATE etc.)
+	//   - Member management follows Editor's constraints (cannot grant
+	//     Owner / Admin, cannot modify existing member roles)
+	//   - Cannot manage connection CRUD, delete the group, or edit group
+	//     metadata (still Owner-only)
+	RoleAdmin  Role = "admin"
 	RoleEditor Role = "editor"
 	RoleViewer Role = "viewer"
 )
 
 func (r Role) Valid() bool {
 	switch r {
-	case RoleOwner, RoleEditor, RoleViewer:
+	case RoleOwner, RoleAdmin, RoleEditor, RoleViewer:
 		return true
 	}
 	return false
 }
 
 // CanWrite returns true if the role can run INSERT/UPDATE/DELETE.
-func (r Role) CanWrite() bool { return r == RoleOwner || r == RoleEditor }
+func (r Role) CanWrite() bool {
+	return r == RoleOwner || r == RoleAdmin || r == RoleEditor
+}
+
+// CanDDL returns true if the role can run CREATE/ALTER/DROP/TRUNCATE.
+// Only Owner and Admin qualify; Editor is limited to DML, Viewer is read-only.
+func (r Role) CanDDL() bool {
+	return r == RoleOwner || r == RoleAdmin
+}
 
 // CanManage returns true if the role can manage members and connections.
+// Group / connection / member CRUD remains Owner-only; Admin only extends SQL DDL.
 func (r Role) CanManage() bool { return r == RoleOwner }
 
 // Group is a sharable collection of database connections.

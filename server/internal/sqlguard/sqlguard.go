@@ -340,7 +340,7 @@ func stripQuotesAndComments(s string) string {
 // CheckAllowed returns nil if every statement in raw SQL is allowed for the given role.
 // Viewer: only CatRead.
 // Editor: CatRead + CatWrite + CatTx (commit/rollback to undo accidents).
-// Owner:  everything.
+// Admin / Owner: everything (including DDL/Admin).
 func CheckAllowed(raw string, role model.Role) error {
 	stmts := Split(raw)
 	if len(stmts) == 0 {
@@ -360,13 +360,16 @@ func CheckAllowed(raw string, role model.Role) error {
 }
 
 func allowed(c Category, r model.Role) bool {
-	switch r {
-	case model.RoleViewer:
-		return c == CatRead
-	case model.RoleEditor:
-		return c == CatRead || c == CatWrite || c == CatTx
-	case model.RoleOwner:
-		return c != CatUnknown
+	if c == CatUnknown {
+		return false
+	}
+	switch c {
+	case CatRead:
+		return r.Valid()
+	case CatWrite, CatTx:
+		return r.CanWrite()
+	case CatDDL, CatAdmin:
+		return r.CanDDL()
 	}
 	return false
 }

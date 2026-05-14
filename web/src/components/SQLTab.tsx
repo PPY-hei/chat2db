@@ -29,6 +29,7 @@ import type { editor as MonacoEditor } from "monaco-editor";
 import { api } from "../api";
 import type { ExecuteResponse, QueryResult, SavedQuery } from "../types";
 import type { OpenedTab } from "../pages/MainLayout";
+import { ROLE_TAG_COLOR } from "../utils/role";
 
 interface Props {
   tab: OpenedTab;
@@ -398,7 +399,7 @@ export default function SQLTab({ tab }: Props) {
               DB: {tab.database}
             </Tag>
           )}
-          <Tag color={tab.role === "owner" ? "orange" : tab.role === "editor" ? "green" : "default"}>
+          <Tag color={ROLE_TAG_COLOR[tab.role]}>
             权限：{tab.role}
           </Tag>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>

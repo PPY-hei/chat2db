@@ -79,6 +79,15 @@ func TestCheckAllowed(t *testing.T) {
 		{"DROP TABLE t", model.RoleEditor, false},
 		{"GRANT SELECT ON t TO foo", model.RoleEditor, false},
 
+		// Admin 在 SQL 层与 Owner 等价：DDL 与 Admin 语句都允许
+		{"SELECT 1", model.RoleAdmin, true},
+		{"INSERT INTO t VALUES (1)", model.RoleAdmin, true},
+		{"CREATE TABLE t(id int)", model.RoleAdmin, true},
+		{"ALTER TABLE t ADD COLUMN c int", model.RoleAdmin, true},
+		{"DROP TABLE t", model.RoleAdmin, true},
+		{"TRUNCATE TABLE t", model.RoleAdmin, true},
+		{"GRANT SELECT ON t TO foo", model.RoleAdmin, true},
+
 		{"DROP TABLE t", model.RoleOwner, true},
 		{"GRANT SELECT ON t TO foo", model.RoleOwner, true},
 

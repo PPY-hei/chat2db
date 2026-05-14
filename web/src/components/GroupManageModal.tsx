@@ -20,6 +20,7 @@ import {
 import { TeamOutlined, UserAddOutlined, RobotOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import type { Group, Member, Role } from "../types";
+import { ROLE_TAG_COLOR, canInviteMember, canManageGroup } from "../utils/role";
 
 interface Props {
   open: boolean;
@@ -106,8 +107,8 @@ export default function GroupManageModal({ open, groups, onClose, onChanged }: P
   };
 
   const currentGroup = groups.find((g) => String(g.id) === activeID);
-  const isOwner = currentGroup?.role === "owner";
-  const isEditorOrAbove = currentGroup?.role === "owner" || currentGroup?.role === "editor";
+  const isOwner = canManageGroup(currentGroup?.role);
+  const canInvite = canInviteMember(currentGroup?.role);
 
   const toggleShareLLM = async (val: boolean) => {
     if (!currentGroup) return;
@@ -144,7 +145,7 @@ export default function GroupManageModal({ open, groups, onClose, onChanged }: P
             label: (
               <Space>
                 <span>{g.name}</span>
-                <Tag color={g.role === "owner" ? "orange" : g.role === "editor" ? "green" : "default"}>
+                <Tag color={ROLE_TAG_COLOR[g.role]}>
                   {g.role}
                 </Tag>
               </Space>
@@ -189,7 +190,7 @@ export default function GroupManageModal({ open, groups, onClose, onChanged }: P
                   </Card>
                 )}
 
-                {isEditorOrAbove ? (
+                {canInvite ? (
                   <Card size="small" title="邀请 / 更新成员" style={{ marginBottom: 16 }}>
                     <Form form={memberForm} layout="inline" preserve={false}>
                       <Form.Item name="email" rules={[{ required: true, type: "email" }]}>
@@ -202,10 +203,12 @@ export default function GroupManageModal({ open, groups, onClose, onChanged }: P
                             isOwner
                               ? [
                                   { label: "Owner", value: "owner" },
+                                  { label: "Admin", value: "admin" },
                                   { label: "Editor", value: "editor" },
                                   { label: "Viewer", value: "viewer" },
                                 ]
                               : [
+                                  // Admin / Editor 只能邀请 Editor / Viewer，避免越权造 Owner / Admin
                                   { label: "Editor", value: "editor" },
                                   { label: "Viewer", value: "viewer" },
                                 ]
@@ -218,13 +221,13 @@ export default function GroupManageModal({ open, groups, onClose, onChanged }: P
                     </Form>
                     {!isOwner && (
                       <Typography.Paragraph type="secondary" style={{ marginBottom: 0, marginTop: 8 }}>
-                        Editor 仅可邀请新成员（角色：Viewer / Editor），不能修改既有成员角色或邀请 Owner。
+                        非 Owner 仅可邀请新成员（角色：Viewer / Editor），不能修改既有成员角色或邀请 Owner / Admin。
                       </Typography.Paragraph>
                     )}
                   </Card>
                 ) : (
                   <Typography.Paragraph type="secondary">
-                    仅 Owner 或 Editor 可以邀请成员。
+                    仅 Owner / Admin / Editor 可以邀请成员。
                   </Typography.Paragraph>
                 )}
 
@@ -255,7 +258,7 @@ export default function GroupManageModal({ open, groups, onClose, onChanged }: P
                       <Space size={12}>
                         <strong>{m.name}</strong>
                         <Typography.Text type="secondary">{m.email}</Typography.Text>
-                        <Tag color={m.role === "owner" ? "orange" : m.role === "editor" ? "green" : "default"}>
+                        <Tag color={ROLE_TAG_COLOR[m.role]}>
                           {m.role}
                         </Tag>
                       </Space>
