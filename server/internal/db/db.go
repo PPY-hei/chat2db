@@ -117,6 +117,7 @@ func metaModels() []any {
 		&model.GroupMember{},
 		&model.Connection{},
 		&model.SavedQuery{},
+		&model.AuditLog{},
 	}
 }
 

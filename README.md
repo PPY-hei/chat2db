@@ -199,20 +199,24 @@ User ─┬──(多对多 via GroupMember)──► Group ─┬──► Conn
 
 角色权限矩阵：
 
-| 动作 | Viewer | Editor | Owner |
-|------|:------:|:------:|:------:|
-| 查看连接 / Schema / 表 | ✓ | ✓ | ✓ |
-| 执行 SELECT / SHOW / EXPLAIN | ✓ | ✓ | ✓ |
-| 执行 INSERT / UPDATE / DELETE / MERGE | ✗ | ✓ | ✓ |
-| 执行 BEGIN / COMMIT / ROLLBACK | ✗ | ✓ | ✓ |
-| 执行 CREATE / ALTER / DROP / TRUNCATE | ✗ | ✗ | ✓ |
-| 执行 GRANT / REVOKE / VACUUM / ANALYZE | ✗ | ✗ | ✓ |
-| 邀请新成员（viewer / editor） | ✗ | ✓ | ✓ |
-| 邀请 / 提升为 Owner | ✗ | ✗ | ✓ |
-| 修改既有成员角色 / 移除成员 | ✗ | ✗ | ✓ |
-| 新建 / 编辑 / 删除连接 | ✗ | ✗ | ✓ |
-| 切换 ShareLLM / 改组名描述 | ✗ | ✗ | ✓ |
-| 收藏 SQL | ✓ | ✓ | ✓ |
+| 动作 | Viewer | Editor | Admin | Owner |
+|------|:------:|:------:|:------:|:------:|
+| 查看连接 / Schema / 表 | ✓ | ✓ | ✓ | ✓ |
+| 执行 SELECT / SHOW / EXPLAIN | ✓ | ✓ | ✓ | ✓ |
+| 执行 INSERT / UPDATE / DELETE / MERGE | ✗ | ✓ | ✓ | ✓ |
+| 执行 BEGIN / COMMIT / ROLLBACK | ✗ | ✓ | ✓ | ✓ |
+| 执行 CREATE / ALTER / DROP / TRUNCATE | ✗ | ✗ | ✓ | ✓ |
+| 执行 GRANT / REVOKE / VACUUM / ANALYZE | ✗ | ✗ | ✓ | ✓ |
+| 查看审计日志（按组隔离） | ✗ | ✗ | ✓ | ✓ |
+| 邀请新成员（viewer / editor） | ✗ | ✓ | ✓ | ✓ |
+| 邀请 / 提升为 Admin / Owner | ✗ | ✗ | ✗ | ✓ |
+| 修改既有成员角色 / 移除成员 | ✗ | ✗ | ✗ | ✓ |
+| 新建 / 编辑 / 删除连接 | ✗ | ✗ | ✗ | ✓ |
+| 切换 ShareLLM / 改组名描述 | ✗ | ✗ | ✗ | ✓ |
+| 收藏 SQL | ✓ | ✓ | ✓ | ✓ |
+
+> Admin 在 SQL 层等同 Owner（可执行任意 DDL / 管理语句），但**组管理**仍是 Owner 专属：
+> Admin 不能修改既有成员角色、不能邀请 Owner / Admin、不能动连接 CRUD 与组元信息。
 
 ## SQL 解析器与安全
 
@@ -237,6 +241,24 @@ CTE 对 `WITH x AS (...) INSERT/UPDATE/DELETE ...` 采用**保守策略**：只�
 - 可选的 SSH 隧道仅在**进程内存**维护 `connID → listener + ssh.Client` 的复用条目，连接更新/删除时立刻失效并关闭。
 - JWT 通过 HS256 签发；未带/过期 token 返回 401，前端全局拦截器会自动跳回登录页。
 - LLM API Key 永远只驻留在后端内存，通过服务端代理转发，不会在 `/api/me` 等接口返回给前端。
+
+## 审计日志
+
+后端在以下事件点埋点，进入异步 worker → MySQL/PostgreSQL/SQLite 的 `audit_logs` 表：
+
+| 事件 | Action | 关键字段 |
+|------|--------|----------|
+| SQL 执行（含被 sqlguard 拦截的尝试） | `sql.execute` | `detail.sql / role / failed_sql` |
+| 登录成功 / 失败 / 注册 | `auth.login.success` / `auth.login.fail` / `auth.register` | `user_email / ip / ua` |
+| 邀请 / 更新 / 移除成员 | `member.add` / `member.update` / `member.remove` | `target=邮箱 / detail.role` |
+| 连接 CRUD / 测试 | `connection.create` / `update` / `delete` / `test` | `target=连接名 / detail.host:port` |
+
+设计要点：
+- **异步入库**：业务路径调用 `service.LogAudit`，进入容量 1024 的 buffered channel，由后台 goroutine 顺序写入，不阻塞用户请求；队列满时丢弃并打印 warn，可通过 `service.AuditDroppedTotal()` 观察累计丢弃。
+- **保留策略**：默认保留 90 天，每 6 小时清理一次旧记录。可通过 `AUDIT_RETENTION` 环境变量调整（如 `AUDIT_RETENTION=720h` 为 30 天，`<=0` 表示永不清理）。
+- **可见性按组隔离**：`GET /api/audit/logs` 仅允许在任一组是 admin/owner 的用户访问；查询 SQL 自动按调用者作为 admin/owner 的组列表过滤，并叠加自身的无组事件（auth.*）。Admin / Owner 之间互不可见对方组的事件。
+- **前端入口**：`MainLayout` 头部出现"审计日志"按钮（仅当用户在任意组是 admin/owner 时显示）；时间窗口默认近 7 天，支持改时间、过滤 action / 组 / 关键字 / 仅失败、按行展开 detail JSON。
+- **敏感字段**：当前按 PRD 要求**原样存储** SQL 文本与 client IP / UA。如有合规需求，可在 `service.LogAudit` 入口加截断 / 哈希钩子。
 
 ## 本地开发
 
@@ -460,6 +482,7 @@ server {
 | `CREDENTIAL_KEY` | 占位 32 字节 | AES-256-GCM 主密钥，**必须 ≥ 32 字节**，用于加密 DB 密码与 LLM API Key；release 模式下必须覆盖 |
 | `QUERY_MAX_ROWS` | `1000` | 单次 SQL 执行最多返回行数，超出会标记 `truncated` |
 | `QUERY_TIMEOUT_SECONDS` | `30` | 单次 SQL 执行超时 |
+| `AUDIT_RETENTION` | `2160h`（90 天） | 审计日志保留时长，Go duration 格式。`<=0` 表示永不清理 |
 
 > ⚠️ `CREDENTIAL_KEY` 一旦更换，原先加密过的 DB 密码 / LLM API Key 将**无法解密**，所有连接会需要重新保存一次密码。
 
@@ -496,6 +519,8 @@ server {
 | `POST` | `/api/saved-queries` | 新建收藏 |
 | `DELETE` | `/api/saved-queries/:id` | 删除（作者或 Owner） |
 | `POST` | `/api/ai/chat` | AI 写 SQL，自动注入 @ 引用表的 DDL 上下文 |
+| `GET`  | `/api/audit/logs` | 审计日志查询（仅在任一组是 admin/owner 的用户可读，按组隔离） |
+| `GET`  | `/api/audit/actions` | 审计事件枚举（供 UI 构造下拉过滤） |
 
 ## 默认快捷键
 

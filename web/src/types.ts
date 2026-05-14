@@ -114,3 +114,52 @@ export interface SavedQuery {
   database?: string;
   created_by_name?: string;
 }
+
+export type AuditAction =
+  | "sql.execute"
+  | "auth.login.success"
+  | "auth.login.fail"
+  | "auth.register"
+  | "member.add"
+  | "member.remove"
+  | "member.update"
+  | "connection.create"
+  | "connection.update"
+  | "connection.delete"
+  | "connection.test";
+
+export interface AuditLog {
+  id: number;
+  created_at: string;
+  user_id?: number;
+  user_email: string;
+  action: AuditAction;
+  group_id?: number;
+  conn_id?: number;
+  target: string;
+  detail: string;
+  success: boolean;
+  duration_ms: number;
+  error_msg: string;
+  ip: string;
+  user_agent: string;
+}
+
+export interface AuditLogQuery {
+  from?: string;
+  to?: string;
+  actions?: AuditAction[];
+  keyword?: string;
+  only_fail?: boolean;
+  page?: number;
+  size?: number;
+  group_id?: number;
+}
+
+export interface AuditLogPage {
+  items: AuditLog[];
+  total: number;
+  page: number;
+  size: number;
+  visible_group_ids: number[];
+}

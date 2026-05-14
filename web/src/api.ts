@@ -1,5 +1,8 @@
 import axios, { AxiosInstance } from "axios";
 import type {
+  AuditAction,
+  AuditLogPage,
+  AuditLogQuery,
   Connection,
   ColumnInfo,
   DriverInfo,
@@ -147,4 +150,18 @@ export const api = {
     http
       .post<{ sql: string; explanation?: string; raw: string }>("/ai/chat", body)
       .then((r) => r.data),
+
+  // 审计日志（仅在任一组是 admin/owner 的用户可读，由后端按组隔离）
+  listAuditLogs: (q: AuditLogQuery = {}) =>
+    http
+      .get<AuditLogPage>("/audit/logs", {
+        params: {
+          ...q,
+          actions: q.actions?.join(","),
+          only_fail: q.only_fail ? 1 : undefined,
+        },
+      })
+      .then((r) => r.data),
+  listAuditActions: () =>
+    http.get<{ actions: AuditAction[] }>("/audit/actions").then((r) => r.data.actions),
 };

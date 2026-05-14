@@ -46,6 +46,10 @@ type Config struct {
 
 	QueryMaxRows    int
 	QueryTimeoutSec int
+
+	// AuditRetention 审计日志保留时长。<= 0 表示永不清理（仅推荐测试环境）。
+	// 默认 90 天，对应 env AUDIT_RETENTION=2160h。
+	AuditRetention time.Duration
 }
 
 var cfg *Config
@@ -68,6 +72,7 @@ func Load() *Config {
 		JWTExpireHours:        getEnvInt("JWT_EXPIRE_HOURS", 72),
 		QueryMaxRows:          getEnvInt("QUERY_MAX_ROWS", 1000),
 		QueryTimeoutSec:       getEnvInt("QUERY_TIMEOUT_SECONDS", 30),
+		AuditRetention:        getEnvDuration("AUDIT_RETENTION", 90*24*time.Hour),
 	}
 
 	keyStr := getEnv("CREDENTIAL_KEY", defaultCredentialKey)

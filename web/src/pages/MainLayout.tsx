@@ -33,12 +33,13 @@ import type { DataNode } from "antd/es/tree";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { Connection, Group, Role, TableInfo } from "../types";
-import { canManageGroup } from "../utils/role";
+import { canDDL, canManageGroup } from "../utils/role";
 import { useAuth } from "../store";
 import GroupManageModal from "../components/GroupManageModal";
 import ConnectionFormModal from "../components/ConnectionFormModal";
 import LLMConfigModal from "../components/LLMConfigModal";
 import MySavedQueriesModal from "../components/MySavedQueriesModal";
+import AuditLogModal from "../components/AuditLogModal";
 import SQLTab from "../components/SQLTab";
 import TableDataTab from "../components/TableDataTab";
 
@@ -131,6 +132,7 @@ export default function MainLayout() {
   const [groupModal, setGroupModal] = useState(false);
   const [llmModal, setLLMModal] = useState(false);
   const [savedModal, setSavedModal] = useState(false);
+  const [auditModal, setAuditModal] = useState(false);
   const [connModal, setConnModal] = useState<{ open: boolean; groupID?: number; editing?: Connection } | null>(null);
 
   const [tabs, setTabs] = useState<OpenedTab[]>([]);
@@ -486,6 +488,10 @@ export default function MainLayout() {
     return null;
   };
 
+  // 仅当用户在任意组是 admin/owner 时才显示"审计日志"入口。
+  // 后端会按组隔离做二次校验，这里只是 UI 层的可见性提示。
+  const canViewAudit = useMemo(() => groups.some((g) => canDDL(g.role)), [groups]);
+
   return (
     <div className="app-shell">
       <div className="app-header">
@@ -510,6 +516,16 @@ export default function MainLayout() {
           <Button type="text" style={{ color: "#fff" }} icon={<StarOutlined />} onClick={() => setSavedModal(true)}>
             我的收藏
           </Button>
+          {canViewAudit && (
+            <Button
+              type="text"
+              style={{ color: "#fff" }}
+              icon={<FileSearchOutlined />}
+              onClick={() => setAuditModal(true)}
+            >
+              审计日志
+            </Button>
+          )}
           <Dropdown
             menu={{
               items: [
@@ -671,6 +687,12 @@ export default function MainLayout() {
           openSQLTab(foundConn, foundGroup.role, sql);
           setSavedModal(false);
         }}
+      />
+
+      <AuditLogModal
+        open={auditModal}
+        groups={groups}
+        onClose={() => setAuditModal(false)}
       />
     </div>
   );
