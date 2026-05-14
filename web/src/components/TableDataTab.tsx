@@ -29,6 +29,7 @@ import {
 import { api } from "../api";
 import type { ColumnInfo, ExecuteResponse } from "../types";
 import type { OpenedTab } from "../pages/MainLayout";
+import { ROLE_TAG_COLOR, canWrite } from "../utils/role";
 
 interface Props {
   tab: OpenedTab;
@@ -302,7 +303,8 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
   }, [tab.key]);
 
   // ===================== 内联编辑 =====================
-  const canEdit = tab.role === "owner" || tab.role === "editor";
+  // Admin 与 Owner / Editor 一样可以 DML（写数据）。Admin 额外拥有 DDL 权限。
+  const canEdit = canWrite(tab.role);
   const pkCols = useMemo(() => columns.filter((c) => c.is_primary).map((c) => c.name), [columns]);
   const hasPK = pkCols.length > 0;
 
@@ -752,7 +754,7 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
             {tab.database && <span style={{ color: "#2563eb" }}>{tab.database}/</span>}
             {tab.schema}.{tab.table}
           </strong>
-          <Tag color={tab.role === "owner" ? "orange" : tab.role === "editor" ? "green" : "default"}>
+          <Tag color={ROLE_TAG_COLOR[tab.role]}>
             {tab.role}
           </Tag>
           <Button size="small" icon={<ReloadOutlined />} onClick={reload} loading={loading}>

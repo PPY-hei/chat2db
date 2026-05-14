@@ -205,6 +205,7 @@ body.is-resizing * {
 }
 
 .role-owner { background: #b14a00; }
+.role-admin { background: #1565c0; }
 .role-editor { background: #1d7a2e; }
 .role-viewer { background: #4a5568; }
 
