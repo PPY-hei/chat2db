@@ -63,5 +63,9 @@ func RegisterRoutes(r *gin.Engine) {
 
 		// AI
 		authed.POST("/ai/chat", AIChat)
+
+		// 审计日志（仅 admin/owner 可访问；service 层按组隔离）
+		authed.GET("/audit/logs", QueryAuditLogs)
+		authed.GET("/audit/actions", ListAuditActions)
 	}
 }

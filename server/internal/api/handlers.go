@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/chy/chat2db/server/internal/auth"
 	"github.com/chy/chat2db/server/internal/config"
@@ -31,21 +33,34 @@ type registerReq struct {
 }
 
 func Register(c *gin.Context) {
+	rec := newAuditRecorder(c, model.AuditAuthRegister, time.Now())
+	defer rec.commit()
+
 	var in registerReq
 	if err := c.ShouldBindJSON(&in); err != nil {
+		rec.fail(err)
 		badRequest(c, err)
 		return
 	}
+	rec.ac.UserEmail = in.Email
+	rec.target = in.Email
+	rec.detail = gin.H{"name": in.Name}
+
 	u, err := service.Register(in.Email, in.Name, in.Password)
 	if err != nil {
+		rec.fail(err)
 		badRequest(c, err)
 		return
 	}
+	rec.ac.UserID = u.ID
+
 	token, err := auth.GenerateToken(u.ID, u.Email)
 	if err != nil {
+		rec.fail(err)
 		internal(c, err)
 		return
 	}
+	rec.success = true
 	c.JSON(http.StatusOK, gin.H{"token": token, "user": u})
 }
 
@@ -55,21 +70,36 @@ type loginReq struct {
 }
 
 func Login(c *gin.Context) {
+	rec := newAuditRecorder(c, model.AuditAuthLoginSuccess, time.Now())
+	defer rec.commit()
+
 	var in loginReq
 	if err := c.ShouldBindJSON(&in); err != nil {
+		rec.fail(err)
+		rec.action = model.AuditAuthLoginFail
 		badRequest(c, err)
 		return
 	}
+	rec.ac.UserEmail = in.Email
+	rec.target = in.Email
+
 	u, err := service.Login(in.Email, in.Password)
 	if err != nil {
+		rec.fail(err)
+		rec.action = model.AuditAuthLoginFail
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
+	rec.ac.UserID = u.ID
+
 	token, err := auth.GenerateToken(u.ID, u.Email)
 	if err != nil {
+		rec.fail(err)
+		rec.action = model.AuditAuthLoginFail
 		internal(c, err)
 		return
 	}
+	rec.success = true
 	c.JSON(http.StatusOK, gin.H{"token": token, "user": u})
 }
 
@@ -164,45 +194,81 @@ type memberReq struct {
 }
 
 func AddMember(c *gin.Context) {
+	rec := newAuditRecorder(c, model.AuditMemberAdd, time.Now())
+	defer rec.commit()
+
 	uid := middleware.CurrentUserID(c)
 	gid, err := uintParam(c, "groupID")
 	if err != nil {
+		rec.fail(err)
 		badRequest(c, err)
 		return
 	}
+	rec.groupID = uptr(gid)
+
 	var in memberReq
 	if err := c.ShouldBindJSON(&in); err != nil {
+		rec.fail(err)
 		badRequest(c, err)
 		return
 	}
+	rec.target = in.Email
+	rec.detail = gin.H{"role": in.Role}
+
 	var target model.User
 	if err := findDB().Where("email = ?", in.Email).First(&target).Error; err != nil {
+		rec.errMsg = "user not found"
 		badRequest(c, errors.New("user not found"))
 		return
 	}
+	// 复用现有成员判断走 update 语义
+	var existing model.GroupMember
+	if err := findDB().Where("group_id = ? AND user_id = ?", gid, target.ID).First(&existing).Error; err == nil {
+		rec.action = model.AuditMemberUpdate
+	}
 	if err := service.AddMember(uid, gid, target.ID, in.Role); err != nil {
+		rec.fail(err)
 		forbidden(c, err)
 		return
 	}
+	rec.detail = gin.H{"role": in.Role, "target_user_id": target.ID}
+	rec.success = true
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func RemoveMember(c *gin.Context) {
+	rec := newAuditRecorder(c, model.AuditMemberRemove, time.Now())
+	defer rec.commit()
+
 	uid := middleware.CurrentUserID(c)
 	gid, err := uintParam(c, "groupID")
 	if err != nil {
+		rec.fail(err)
 		badRequest(c, err)
 		return
 	}
+	rec.groupID = uptr(gid)
+
 	memberID, err := uintParam(c, "userID")
 	if err != nil {
+		rec.fail(err)
 		badRequest(c, err)
 		return
 	}
+	// 提前取一次被移除用户的 email 作 target，让审计日志可读
+	rec.target = fmt.Sprintf("#%d", memberID)
+	var member model.User
+	if err := findDB().Select("email").First(&member, memberID).Error; err == nil {
+		rec.target = member.Email
+	}
+	rec.detail = gin.H{"target_user_id": memberID}
+
 	if err := service.RemoveMember(uid, gid, memberID); err != nil {
+		rec.fail(err)
 		forbidden(c, err)
 		return
 	}
+	rec.success = true
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -224,22 +290,37 @@ func ListMembers(c *gin.Context) {
 // --- connections ---
 
 func CreateConnection(c *gin.Context) {
+	rec := newAuditRecorder(c, model.AuditConnectionCreate, time.Now())
+	defer rec.commit()
+
 	uid := middleware.CurrentUserID(c)
 	gid, err := uintParam(c, "groupID")
 	if err != nil {
+		rec.fail(err)
 		badRequest(c, err)
 		return
 	}
+	rec.groupID = uptr(gid)
+
 	var in service.ConnectionInput
 	if err := c.ShouldBindJSON(&in); err != nil {
+		rec.fail(err)
 		badRequest(c, err)
 		return
 	}
+	rec.target = in.Name
+	rec.detail = gin.H{"driver": in.Driver, "host": in.Host, "port": in.Port, "database": in.Database}
+
 	conn, err := service.CreateConnection(uid, gid, in)
 	if err != nil {
+		rec.fail(err)
 		forbidden(c, err)
 		return
 	}
+	rec.connID = uptr(conn.ID)
+	rec.target = conn.Name
+	rec.detail = gin.H{"driver": conn.Driver, "host": conn.Host, "port": conn.Port, "database": conn.Database}
+	rec.success = true
 	c.JSON(http.StatusOK, conn)
 }
 
@@ -259,38 +340,67 @@ func ListConnections(c *gin.Context) {
 }
 
 func UpdateConnection(c *gin.Context) {
+	rec := newAuditRecorder(c, model.AuditConnectionUpdate, time.Now())
+	defer rec.commit()
+
 	uid := middleware.CurrentUserID(c)
 	id, err := uintParam(c, "connID")
 	if err != nil {
+		rec.fail(err)
 		badRequest(c, err)
 		return
 	}
+	rec.connID = uptr(id)
+
 	var in service.ConnectionInput
 	if err := c.ShouldBindJSON(&in); err != nil {
+		rec.fail(err)
 		badRequest(c, err)
 		return
 	}
+	rec.target = in.Name
+	rec.detail = gin.H{"driver": in.Driver, "host": in.Host, "port": in.Port, "database": in.Database}
+
 	conn, err := service.UpdateConnection(uid, id, in)
 	if err != nil {
+		rec.fail(err)
 		forbidden(c, err)
 		return
 	}
 	dbexec.InvalidatePool(conn.ID)
+	rec.groupID = uptr(conn.GroupID)
+	rec.target = conn.Name
+	rec.detail = gin.H{"driver": conn.Driver, "host": conn.Host, "port": conn.Port, "database": conn.Database}
+	rec.success = true
 	c.JSON(http.StatusOK, conn)
 }
 
 func DeleteConnection(c *gin.Context) {
+	rec := newAuditRecorder(c, model.AuditConnectionDelete, time.Now())
+	defer rec.commit()
+
 	uid := middleware.CurrentUserID(c)
 	id, err := uintParam(c, "connID")
 	if err != nil {
+		rec.fail(err)
 		badRequest(c, err)
 		return
 	}
+	rec.connID = uptr(id)
+	// 提前取一次连接信息以便审计 target / groupID 字段；失败也走删除路径，不阻断。
+	rec.target = fmt.Sprintf("#%d", id)
+	if conn, _, err := service.GetConnection(uid, id); err == nil {
+		rec.target = conn.Name
+		rec.groupID = uptr(conn.GroupID)
+	}
+
 	if err := service.DeleteConnection(uid, id); err != nil {
+		rec.fail(err)
 		forbidden(c, err)
 		return
 	}
 	dbexec.InvalidatePool(id)
+	rec.success = true
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -309,16 +419,23 @@ func ListDrivers(c *gin.Context) {
 }
 
 func TestConnection(c *gin.Context) {
+	rec := newAuditRecorder(c, model.AuditConnectionTest, time.Now())
+	defer rec.commit()
+
 	uid := middleware.CurrentUserID(c)
 	var in testConnReq
 	if err := c.ShouldBindJSON(&in); err != nil {
+		rec.fail(err)
 		badRequest(c, err)
 		return
 	}
+	rec.connID = uptrOrNil(in.ConnectionID)
+
 	var conn *model.Connection
 	if in.ConnectionID != 0 {
 		got, _, err := service.GetConnection(uid, in.ConnectionID)
 		if err != nil {
+			rec.fail(err)
 			forbidden(c, err)
 			return
 		}
@@ -334,6 +451,7 @@ func TestConnection(c *gin.Context) {
 		// encrypt in-memory so DecryptPassword works
 		enc, err := service.EncryptForTest(in.Draft.Password)
 		if err != nil {
+			rec.fail(err)
 			badRequest(c, err)
 			return
 		}
@@ -342,6 +460,7 @@ func TestConnection(c *gin.Context) {
 		if in.Draft.SSHPassword != "" {
 			enc, err := cryptopkg.EncryptString(in.Draft.SSHPassword, key)
 			if err != nil {
+				rec.fail(err)
 				badRequest(c, err)
 				return
 			}
@@ -350,6 +469,7 @@ func TestConnection(c *gin.Context) {
 		if in.Draft.SSHPrivateKey != "" {
 			enc, err := cryptopkg.EncryptString(in.Draft.SSHPrivateKey, key)
 			if err != nil {
+				rec.fail(err)
 				badRequest(c, err)
 				return
 			}
@@ -358,6 +478,7 @@ func TestConnection(c *gin.Context) {
 		if in.Draft.SSHPassphrase != "" {
 			enc, err := cryptopkg.EncryptString(in.Draft.SSHPassphrase, key)
 			if err != nil {
+				rec.fail(err)
 				badRequest(c, err)
 				return
 			}
@@ -367,6 +488,7 @@ func TestConnection(c *gin.Context) {
 		if in.Draft.SSLCACert != "" {
 			enc, err := cryptopkg.EncryptString(in.Draft.SSLCACert, key)
 			if err != nil {
+				rec.fail(err)
 				badRequest(c, err)
 				return
 			}
@@ -375,6 +497,7 @@ func TestConnection(c *gin.Context) {
 		if in.Draft.SSLClientCert != "" {
 			enc, err := cryptopkg.EncryptString(in.Draft.SSLClientCert, key)
 			if err != nil {
+				rec.fail(err)
 				badRequest(c, err)
 				return
 			}
@@ -383,6 +506,7 @@ func TestConnection(c *gin.Context) {
 		if in.Draft.SSLClientKey != "" {
 			enc, err := cryptopkg.EncryptString(in.Draft.SSLClientKey, key)
 			if err != nil {
+				rec.fail(err)
 				badRequest(c, err)
 				return
 			}
@@ -392,13 +516,21 @@ func TestConnection(c *gin.Context) {
 			conn.SSHPort = 22
 		}
 	} else {
-		badRequest(c, errors.New("missing connection_id or draft"))
+		err := errors.New("missing connection_id or draft")
+		rec.fail(err)
+		badRequest(c, err)
 		return
 	}
+	rec.target = conn.Name
+	rec.groupID = uptrOrNil(conn.GroupID)
+	rec.detail = gin.H{"host": conn.Host, "port": conn.Port, "driver": conn.Driver}
+
 	if err := dbexec.Ping(c.Request.Context(), conn); err != nil {
+		rec.fail(err)
 		c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
 		return
 	}
+	rec.success = true
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -520,17 +652,33 @@ type executeReq struct {
 }
 
 func ExecuteSQL(c *gin.Context) {
+	rec := newAuditRecorder(c, model.AuditSQLExecute, time.Now())
+	defer rec.commit()
+
 	conn, role, err := resolveConn(c)
 	if err != nil {
+		rec.fail(err)
 		forbidden(c, err)
 		return
 	}
+	rec.groupID = uptr(conn.GroupID)
+	rec.connID = uptr(conn.ID)
+
 	var in executeReq
 	if err := c.ShouldBindJSON(&in); err != nil {
+		rec.fail(err)
 		badRequest(c, err)
 		return
 	}
+	auditTarget := conn.Database
+	if s := c.Query("database"); s != "" {
+		auditTarget = s
+	}
+	rec.target = auditTarget
+	rec.detail = gin.H{"sql": in.SQL, "role": role}
+
 	if err := sqlguard.CheckAllowed(in.SQL, role); err != nil {
+		rec.fail(err)
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 		return
 	}
@@ -539,11 +687,15 @@ func ExecuteSQL(c *gin.Context) {
 	for _, s := range stmts {
 		res, err := dbexec.Exec(c.Request.Context(), conn, s)
 		if err != nil {
+			rec.fail(err)
+			rec.detail = gin.H{"sql": in.SQL, "role": role, "failed_sql": s}
 			c.JSON(http.StatusOK, gin.H{"results": results, "error": err.Error(), "failed_sql": s})
 			return
 		}
 		results = append(results, res)
 	}
+	rec.detail = gin.H{"sql": in.SQL, "role": role, "stmt_count": len(stmts)}
+	rec.success = true
 	c.JSON(http.StatusOK, gin.H{"results": results, "role": role})
 }
 
