@@ -57,33 +57,47 @@ type auditEvent struct {
 //
 // 这样消除每个 handler "失败一处 log + 成功一处 log" 的重复。
 type auditRecorder struct {
-	ac      auditCtx
-	action  model.AuditAction
-	groupID *uint
-	connID  *uint
-	target  string
-	detail  any
-	success bool
-	errMsg  string
-	started time.Time
+	ac        auditCtx
+	action    model.AuditAction
+	groupID   *uint
+	connID    *uint
+	target    string
+	detail    any
+	success   bool
+	errMsg    string
+	started   time.Time
+	requestID string
 }
 
 func newAuditRecorder(c *gin.Context, action model.AuditAction, started time.Time) *auditRecorder {
 	return &auditRecorder{
-		ac:      extractAuditCtx(c),
-		action:  action,
-		started: started,
+		ac:        extractAuditCtx(c),
+		action:    action,
+		started:   started,
+		requestID: middleware.GetRequestID(c),
 	}
 }
 
 func (r *auditRecorder) commit() {
+	detail := r.detail
+	if r.requestID != "" {
+		// 把 request_id 写入 detail JSON，便于审计与 HTTP 日志通过同一 ID 串联。
+		// 仅当 detail 是 gin.H / nil 时无侵入注入；其它复合类型保持原样。
+		switch m := detail.(type) {
+		case gin.H:
+			m["request_id"] = r.requestID
+			detail = m
+		case nil:
+			detail = gin.H{"request_id": r.requestID}
+		}
+	}
 	logAuditEvent(auditEvent{
 		Ctx:      r.ac,
 		Action:   r.action,
 		GroupID:  r.groupID,
 		ConnID:   r.connID,
 		Target:   r.target,
-		Detail:   r.detail,
+		Detail:   detail,
 		Success:  r.success,
 		ErrorMsg: r.errMsg,
 		Started:  r.started,

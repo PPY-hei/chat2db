@@ -483,6 +483,7 @@ server {
 | `QUERY_MAX_ROWS` | `1000` | 单次 SQL 执行最多返回行数，超出会标记 `truncated` |
 | `QUERY_TIMEOUT_SECONDS` | `30` | 单次 SQL 执行超时 |
 | `AUDIT_RETENTION` | `2160h`（90 天） | 审计日志保留时长，Go duration 格式。`<=0` 表示永不清理 |
+| `LOG_LEVEL` | `info` | slog 全局输出级别：`debug` / `info` / `warn` / `error`。所有日志为 JSON 结构化输出到 stdout，包含 `request_id` 字段便于跨条目串联 |
 
 > ⚠️ `CREDENTIAL_KEY` 一旦更换，原先加密过的 DB 密码 / LLM API Key 将**无法解密**，所有连接会需要重新保存一次密码。
 

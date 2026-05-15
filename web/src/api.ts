@@ -40,6 +40,16 @@ http.interceptors.request.use((c) => {
 http.interceptors.response.use(
   (r) => r,
   (err) => {
+    // 后端 4xx/5xx 响应体里都附了 request_id（middleware/RequestID + handlers.errorBody）；
+    // 兜底从响应头 X-Request-ID 取，覆盖纯 panic / 网关返回等场景。
+    // 仅挂到 err 对象，UI 展示留给后续 ErrorBoundary 迭代。
+    const requestId =
+      err.response?.data?.request_id ||
+      err.response?.headers?.["x-request-id"];
+    if (requestId) {
+      err.requestId = requestId;
+    }
+
     if (err.response?.status === 401) {
       setToken(null);
       if (!location.pathname.startsWith("/login")) {
