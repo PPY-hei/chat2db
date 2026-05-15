@@ -794,17 +794,26 @@ func uintParam(c *gin.Context, key string) (uint, error) {
 }
 
 func badRequest(c *gin.Context, err error) {
-	c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	c.JSON(http.StatusBadRequest, errorBody(c, err))
 }
 
 func forbidden(c *gin.Context, err error) {
-	c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+	c.JSON(http.StatusForbidden, errorBody(c, err))
 }
 
 func internal(c *gin.Context, err error) {
-	c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	c.JSON(http.StatusInternalServerError, errorBody(c, err))
 }
 
 func unauthorized(c *gin.Context, err error) {
-	c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+	c.JSON(http.StatusUnauthorized, errorBody(c, err))
+}
+
+// errorBody 是统一错误响应体：保留原有 "error" 字段（向后兼容），
+// 同时附上 "request_id" 便于用户报错截图直接对应到 HTTP 日志 / 审计记录。
+func errorBody(c *gin.Context, err error) gin.H {
+	return gin.H{
+		"error":      err.Error(),
+		"request_id": middleware.GetRequestID(c),
+	}
 }

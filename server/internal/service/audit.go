@@ -2,7 +2,7 @@ package service
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -61,7 +61,10 @@ func LogAudit(entry model.AuditLog) {
 	}
 	if auditQueue == nil {
 		if err := db.Meta().Create(&entry).Error; err != nil {
-			log.Printf("[audit] sync write failed (worker not started): %v", err)
+			slog.Error("audit sync write failed (worker not started)",
+				slog.Any("error", err),
+				slog.String("action", string(entry.Action)),
+			)
 		}
 		return
 	}
@@ -69,7 +72,10 @@ func LogAudit(entry model.AuditLog) {
 	case auditQueue <- entry:
 	default:
 		atomic.AddInt64(&auditDroppedTotal, 1)
-		log.Printf("[audit] queue full, dropped action=%s user=%s", entry.Action, entry.UserEmail)
+		slog.Warn("audit queue full, event dropped",
+			slog.String("action", string(entry.Action)),
+			slog.String("user_email", entry.UserEmail),
+		)
 	}
 }
 
@@ -80,7 +86,10 @@ func runAuditWorker() {
 	defer auditWG.Done()
 	for entry := range auditQueue {
 		if err := db.Meta().Create(&entry).Error; err != nil {
-			log.Printf("[audit] write failed action=%s err=%v", entry.Action, err)
+			slog.Error("audit write failed",
+				slog.String("action", string(entry.Action)),
+				slog.Any("error", err),
+			)
 		}
 	}
 }
@@ -93,11 +102,17 @@ func runAuditPurger(ctx context.Context, retention time.Duration) {
 		cutoff := time.Now().Add(-retention)
 		n, err := PurgeAuditBefore(cutoff)
 		if err != nil {
-			log.Printf("[audit] purge failed cutoff=%s err=%v", cutoff.Format(time.RFC3339), err)
+			slog.Error("audit purge failed",
+				slog.Time("cutoff", cutoff),
+				slog.Any("error", err),
+			)
 			return
 		}
 		if n > 0 {
-			log.Printf("[audit] purged %d rows before %s", n, cutoff.Format(time.RFC3339))
+			slog.Info("audit purged",
+				slog.Int64("rows", n),
+				slog.Time("cutoff", cutoff),
+			)
 		}
 	}
 	purge()

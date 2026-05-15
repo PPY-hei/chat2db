@@ -2,6 +2,7 @@ package config
 
 import (
 	"log"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -50,6 +51,10 @@ type Config struct {
 	// AuditRetention 审计日志保留时长。<= 0 表示永不清理（仅推荐测试环境）。
 	// 默认 90 天，对应 env AUDIT_RETENTION=2160h。
 	AuditRetention time.Duration
+
+	// LogLevel 控制 slog 全局输出级别。支持 debug / info / warn / error，
+	// 大小写不敏感；未识别值回退到 info。env: LOG_LEVEL。
+	LogLevel slog.Level
 }
 
 var cfg *Config
@@ -73,6 +78,7 @@ func Load() *Config {
 		QueryMaxRows:          getEnvInt("QUERY_MAX_ROWS", 1000),
 		QueryTimeoutSec:       getEnvInt("QUERY_TIMEOUT_SECONDS", 30),
 		AuditRetention:        getEnvDuration("AUDIT_RETENTION", 90*24*time.Hour),
+		LogLevel:              parseLogLevel(getEnv("LOG_LEVEL", "info")),
 	}
 
 	keyStr := getEnv("CREDENTIAL_KEY", defaultCredentialKey)
@@ -149,4 +155,20 @@ func getEnvDuration(key string, def time.Duration) time.Duration {
 		}
 	}
 	return def
+}
+
+// parseLogLevel 把字符串映射到 slog.Level；不识别时回退到 Info，保持启动可观测性。
+func parseLogLevel(s string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
