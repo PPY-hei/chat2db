@@ -28,6 +28,7 @@ import {
   PartitionOutlined,
   FileSearchOutlined,
   UserOutlined,
+  CloudDownloadOutlined,
 } from "@ant-design/icons";
 import type { DataNode } from "antd/es/tree";
 import { useNavigate } from "react-router-dom";
@@ -40,6 +41,7 @@ import ConnectionFormModal from "../components/ConnectionFormModal";
 import LLMConfigModal from "../components/LLMConfigModal";
 import MySavedQueriesModal from "../components/MySavedQueriesModal";
 import AuditLogModal from "../components/AuditLogModal";
+import TaskListModal from "../components/TaskListModal";
 import SQLTab from "../components/SQLTab";
 import TableDataTab from "../components/TableDataTab";
 
@@ -133,6 +135,7 @@ export default function MainLayout() {
   const [llmModal, setLLMModal] = useState(false);
   const [savedModal, setSavedModal] = useState(false);
   const [auditModal, setAuditModal] = useState(false);
+  const [taskModal, setTaskModal] = useState(false);
   const [connModal, setConnModal] = useState<{ open: boolean; groupID?: number; editing?: Connection } | null>(null);
 
   const [tabs, setTabs] = useState<OpenedTab[]>([]);
@@ -526,6 +529,14 @@ export default function MainLayout() {
               审计日志
             </Button>
           )}
+          <Button
+            type="text"
+            style={{ color: "#fff" }}
+            icon={<CloudDownloadOutlined />}
+            onClick={() => setTaskModal(true)}
+          >
+            任务
+          </Button>
           <Dropdown
             menu={{
               items: [
@@ -693,6 +704,12 @@ export default function MainLayout() {
         open={auditModal}
         groups={groups}
         onClose={() => setAuditModal(false)}
+      />
+
+      <TaskListModal
+        open={taskModal}
+        groups={groups}
+        onClose={() => setTaskModal(false)}
       />
     </div>
   );

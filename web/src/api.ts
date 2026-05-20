@@ -5,6 +5,7 @@ import type {
   AuditLogQuery,
   Connection,
   ColumnInfo,
+  CreateTaskRequest,
   DriverInfo,
   ExecuteResponse,
   Group,
@@ -13,6 +14,9 @@ import type {
   SavedQuery,
   SchemaInfo,
   TableInfo,
+  Task,
+  TaskPage,
+  TaskQuery,
 } from "./types";
 
 const TOKEN_KEY = "chat2db.token";
@@ -175,4 +179,18 @@ export const api = {
       .then((r) => r.data),
   listAuditActions: () =>
     http.get<{ actions: AuditAction[] }>("/audit/actions").then((r) => r.data.actions),
+
+  // 异步任务（导入 / 导出）
+  listTasks: (q: TaskQuery = {}) =>
+    http
+      .get<TaskPage>("/tasks", { params: { ...q } })
+      .then((r) => r.data),
+  createTask: (body: CreateTaskRequest) =>
+    http.post<Task>("/tasks", body).then((r) => r.data),
+  getTask: (id: number) => http.get<Task>(`/tasks/${id}`).then((r) => r.data),
+  cancelTask: (id: number) =>
+    http.post(`/tasks/${id}/cancel`).then((r) => r.data),
+  deleteTask: (id: number) =>
+    http.delete(`/tasks/${id}`).then((r) => r.data),
+  downloadTaskUrl: (id: number) => `/api/tasks/${id}/download`,
 };

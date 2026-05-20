@@ -163,3 +163,72 @@ export interface AuditLogPage {
   size: number;
   visible_group_ids: number[];
 }
+
+// ========== 异步任务（导入 / 导出） ==========
+
+export type TaskKind = "export" | "import";
+export type TaskScope = "connection" | "database" | "table";
+export type TaskStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "canceled";
+
+export interface Task {
+  id: number;
+  group_id: number;
+  conn_id: number;
+  kind: TaskKind;
+  scope: TaskScope;
+  target_database: string;
+  target_schema: string;
+  target_table: string;
+  status: TaskStatus;
+  progress: number;
+  processed_rows: number;
+  total_rows: number;
+  total_tables: number;
+  done_tables: number;
+  file_path: string;
+  file_size: number;
+  error_msg: string;
+  cancel_requested: boolean;
+  created_by_id: number;
+  creator_name: string;
+  started_at?: string;
+  finished_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskQuery {
+  group_id?: number;
+  conn_id?: number;
+  kind?: TaskKind;
+  scope?: TaskScope;
+  status?: TaskStatus;
+  keyword?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  size?: number;
+}
+
+export interface TaskPage {
+  items: Task[];
+  total: number;
+  page: number;
+  size: number;
+  visible_group_ids: number[];
+}
+
+export interface CreateTaskRequest {
+  group_id: number;
+  conn_id: number;
+  kind: TaskKind;
+  scope: TaskScope;
+  target_database?: string;
+  target_schema?: string;
+  target_table?: string;
+}

@@ -67,5 +67,13 @@ func RegisterRoutes(r *gin.Engine) {
 		// 审计日志（仅 admin/owner 可访问；service 层按组隔离）
 		authed.GET("/audit/logs", QueryAuditLogs)
 		authed.GET("/audit/actions", ListAuditActions)
+
+		// 异步任务（导入 / 导出）
+		authed.GET("/tasks", ListTasks)
+		authed.POST("/tasks", CreateTask)
+		authed.GET("/tasks/:id", GetTaskByID)
+		authed.POST("/tasks/:id/cancel", CancelTaskByID)
+		authed.DELETE("/tasks/:id", DeleteTaskByID)
+		authed.GET("/tasks/:id/download", DownloadTaskArtifact)
 	}
 }

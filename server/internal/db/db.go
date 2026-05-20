@@ -118,6 +118,7 @@ func metaModels() []any {
 		&model.Connection{},
 		&model.SavedQuery{},
 		&model.AuditLog{},
+		&model.Task{},
 	}
 }
 

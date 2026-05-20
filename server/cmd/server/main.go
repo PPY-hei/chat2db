@@ -56,6 +56,10 @@ func main() {
 	service.StartAuditWorker(cfg.AuditRetention)
 	defer service.StopAuditWorker()
 
+	// 启动异步任务（导入 / 导出）worker。产物目录默认 ./data/tasks。
+	service.StartTaskWorker("./data/tasks")
+	defer service.StopTaskWorker()
+
 	r := gin.New()
 	// 中间件顺序：RequestID（最先，让后续都能拿到 ID）→ Logger（请求结束写日志）
 	// → Recovery（panic 时仍能输出 ID + stack）。
