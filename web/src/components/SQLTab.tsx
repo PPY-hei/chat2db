@@ -18,6 +18,7 @@ import {
 } from "antd";
 import {
   CaretRightOutlined,
+  StopOutlined,
   RobotOutlined,
   StarOutlined,
   CopyOutlined,
@@ -38,6 +39,7 @@ interface Props {
 export default function SQLTab({ tab }: Props) {
   const { message } = App.useApp();
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const defaultSQL = tab.driver === "mysql" ? "-- Write SQL here\nSELECT NOW();\n" : "-- Write SQL here\nSELECT now();\n";
   const [sql, setSQL] = useState<string>(tab.initialSQL ?? defaultSQL);
   const [running, setRunning] = useState(false);
@@ -184,6 +186,11 @@ export default function SQLTab({ tab }: Props) {
     }
   }, [tab.initialSQL]);
 
+  // 组件卸载时中止进行中的请求，防止内存泄漏
+  useEffect(() => {
+    return () => { abortRef.current?.abort(); };
+  }, []);
+
   const onMount: OnMount = (ed, monaco) => {
     editorRef.current = ed;
     ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => runSQL());
@@ -202,10 +209,12 @@ export default function SQLTab({ tab }: Props) {
       message.warning("没有可执行的 SQL");
       return;
     }
+    const controller = new AbortController();
+    abortRef.current = controller;
     setRunning(true);
     setResult(null);
     try {
-      const res = await api.execute(tab.connID, toRun, tab.database);
+      const res = await api.execute(tab.connID, toRun, tab.database, controller.signal);
       setResult(res);
       if (res.error) {
         message.error("执行报错：" + res.error);
@@ -213,12 +222,21 @@ export default function SQLTab({ tab }: Props) {
         message.success(`执行成功，共 ${res.results.length} 条结果`);
       }
     } catch (e: any) {
-      const text = e?.response?.data?.error ?? e?.message ?? "执行失败";
-      setResult({ results: [], error: text });
-      message.error(text);
+      if (e.code === "ERR_CANCELED" || e.name === "CanceledError") {
+        message.info("查询已取消");
+      } else {
+        const text = e?.response?.data?.error ?? e?.message ?? "执行失败";
+        setResult({ results: [], error: text });
+        message.error(text);
+      }
     } finally {
+      abortRef.current = null;
       setRunning(false);
     }
+  };
+
+  const cancelSQL = () => {
+    abortRef.current?.abort();
   };
 
   const openAI = () => {
@@ -374,15 +392,25 @@ export default function SQLTab({ tab }: Props) {
     <div className="sql-tab-root">
       <div className="sql-toolbar">
         <Space>
-          <Button
-            type="primary"
-            size="small"
-            icon={<CaretRightOutlined />}
-            onClick={runSQL}
-            loading={running}
-          >
-            执行
-          </Button>
+          {running ? (
+            <Button
+              danger
+              size="small"
+              icon={<StopOutlined />}
+              onClick={cancelSQL}
+            >
+              取消
+            </Button>
+          ) : (
+            <Button
+              type="primary"
+              size="small"
+              icon={<CaretRightOutlined />}
+              onClick={runSQL}
+            >
+              执行
+            </Button>
+          )}
           <Button size="small" icon={<RobotOutlined />} onClick={openAI}>
             AI
           </Button>

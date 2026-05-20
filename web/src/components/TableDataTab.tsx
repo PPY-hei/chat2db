@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   App,
   Button,
+  Dropdown,
   Input,
   Modal,
   Popover,
@@ -25,6 +26,8 @@ import {
   SaveOutlined,
   UndoOutlined,
   EyeOutlined,
+  DeleteOutlined,
+  DownloadOutlined,
 } from "@ant-design/icons";
 import { api } from "../api";
 import type { ColumnInfo, ExecuteResponse } from "../types";
@@ -318,6 +321,18 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
 
   const dirtyCount = dirtyRows.size;
 
+  // ===================== 多选 / 批量导出 / 批量删除 =====================
+  // selectedRowKeys 存放当前页内被选中的行索引（与 dataSource.key 一致）
+  const [selectedRowKeys, setSelectedRowKeys] = useState<number[]>([]);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deletePreviewOpen, setDeletePreviewOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  // 切换页/筛选/排序后，旧选择不再有效，避免误删/误导出
+  useEffect(() => {
+    setSelectedRowKeys([]);
+  }, [page, pageSize, appliedFilters, sortColumn, sortDir, tab.key]);
+
   const startEdit = (rowIdx: number, colName: string, currentVal: any) => {
     if (!canEdit || !hasPK) return;
     setEditingCell({ row: rowIdx, col: colName });
@@ -556,6 +571,136 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
   };
 
   const result = data?.results?.[0];
+
+  // ===================== 选中行的导出 / 删除 =====================
+  // 取出"被选中的真实行内容"，按当前结果集的列顺序展开
+  const getSelectedRows = (): { columns: string[]; rows: any[][] } => {
+    const cols = result?.columns ?? [];
+    const allRows = result?.rows ?? [];
+    const rows = selectedRowKeys
+      .map((k) => allRows[k])
+      .filter((r): r is any[] => Array.isArray(r));
+    return { columns: cols, rows };
+  };
+
+  // 触发浏览器下载：根据 mime 与文件名把字符串内容存为文件
+  const triggerDownload = (content: string, filename: string, mime: string) => {
+    const blob = new Blob([content], { type: `${mime};charset=utf-8` });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // 把任意单元格值标准化为字符串（与 SQLTab 的 formatCell 行为对齐）
+  const cellToString = (v: any): string => {
+    if (v === null || v === undefined) return "";
+    if (typeof v === "object") return JSON.stringify(v);
+    return String(v);
+  };
+
+  // CSV 字段转义：含逗号/引号/换行的字段需要双引号包裹并双写引号
+  const csvEscape = (s: string): string => {
+    if (s.includes(",") || s.includes("\n") || s.includes('"')) {
+      return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+  };
+
+  const exportCSV = (withHeader: boolean) => {
+    const { columns: cols, rows } = getSelectedRows();
+    if (rows.length === 0) {
+      message.warning("没有选中行");
+      return;
+    }
+    const lines: string[] = [];
+    if (withHeader) lines.push(cols.map(csvEscape).join(","));
+    for (const r of rows) {
+      lines.push(r.map((c) => csvEscape(cellToString(c))).join(","));
+    }
+    const stem = `${tab.schema || "data"}.${tab.table || "rows"}`;
+    triggerDownload(lines.join("\n"), `${stem}.csv`, "text/csv");
+    message.success(`已导出 ${rows.length} 行 CSV`);
+  };
+
+  const exportJSON = () => {
+    const { columns: cols, rows } = getSelectedRows();
+    if (rows.length === 0) {
+      message.warning("没有选中行");
+      return;
+    }
+    // 输出对象数组：[{col1: v1, col2: v2}, ...]，对象/数组保持原始结构
+    const objs = rows.map((r) => {
+      const o: Record<string, any> = {};
+      cols.forEach((name, i) => {
+        o[name] = r[i] ?? null;
+      });
+      return o;
+    });
+    const stem = `${tab.schema || "data"}.${tab.table || "rows"}`;
+    triggerDownload(JSON.stringify(objs, null, 2), `${stem}.json`, "application/json");
+    message.success(`已导出 ${rows.length} 行 JSON`);
+  };
+
+  // 生成批量 DELETE SQL（每行一条，按 PK 精确定位；无 PK 时返回空数组）
+  const generateDeleteSQL = (): string[] => {
+    if (!result?.columns || !result.rows || pkCols.length === 0) return [];
+    const stmts: string[] = [];
+    for (const k of selectedRowKeys) {
+      const row = result.rows[k];
+      if (!row) continue;
+      const whereParts: string[] = [];
+      for (const pk of pkCols) {
+        const pkIdx = result.columns.indexOf(pk);
+        if (pkIdx < 0) continue;
+        const pkVal = row[pkIdx];
+        const pkMeta = columns.find((c) => c.name === pk);
+        if (pkVal === null || pkVal === undefined) {
+          whereParts.push(`${q(pk)} IS NULL`);
+        } else {
+          whereParts.push(`${q(pk)} = ${literalFor(String(pkVal), pkMeta?.data_type, isMySQL)}`);
+        }
+      }
+      if (whereParts.length === 0) continue;
+      stmts.push(`DELETE FROM ${fullTable} WHERE ${whereParts.join(" AND ")};`);
+    }
+    return stmts;
+  };
+
+  const confirmDelete = async () => {
+    const stmts = generateDeleteSQL();
+    if (stmts.length === 0) {
+      message.warning("没有可删除的行");
+      return;
+    }
+    setDeleting(true);
+    try {
+      const res = await api.execute(tab.connID, stmts.join("\n"), tab.database);
+      if (res.error) {
+        message.error("删除失败：" + res.error);
+        return;
+      }
+      const affected = res.results?.reduce((sum, r) => sum + (r.rows_affected ?? 0), 0) ?? 0;
+      message.success(`已删除 ${affected} 行`);
+      setSelectedRowKeys([]);
+      setDeleteOpen(false);
+      setDeletePreviewOpen(false);
+      await fetchPage(page, pageSize, appliedFilters);
+      await fetchTotal(appliedFilters);
+    } catch (e: any) {
+      message.error(e?.response?.data?.error ?? "删除失败");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const exportMenuItems = [
+    { key: "csv-with-header", label: "CSV（带表头）" },
+    { key: "csv-no-header", label: "CSV（不带表头）" },
+    { key: "json", label: "JSON" },
+  ];
 
   const columnOptions = useMemo(
     () =>
@@ -820,6 +965,46 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
               查看 DDL
             </Button>
           </Tooltip>
+          {selectedRowKeys.length > 0 && (
+            <>
+              <Tag color="blue" style={{ marginLeft: 4 }}>
+                已选 {selectedRowKeys.length} 行
+              </Tag>
+              <Dropdown
+                menu={{
+                  items: exportMenuItems,
+                  onClick: ({ key }) => {
+                    if (key === "csv-with-header") exportCSV(true);
+                    else if (key === "csv-no-header") exportCSV(false);
+                    else if (key === "json") exportJSON();
+                  },
+                }}
+              >
+                <Button size="small" icon={<DownloadOutlined />}>
+                  导出
+                </Button>
+              </Dropdown>
+              <Tooltip
+                title={
+                  !canEdit
+                    ? "当前角色无写权限"
+                    : !hasPK
+                    ? "该表无主键，不支持按行删除"
+                    : "批量删除选中行"
+                }
+              >
+                <Button
+                  size="small"
+                  danger
+                  icon={<DeleteOutlined />}
+                  disabled={!canEdit || !hasPK}
+                  onClick={() => setDeleteOpen(true)}
+                >
+                  删除
+                </Button>
+              </Tooltip>
+            </>
+          )}
         </Space>
         {result?.truncated && (
           <Tag color="orange" style={{ marginLeft: 8 }}>
@@ -836,6 +1021,14 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
         <Table
           size="small"
           bordered
+          rowSelection={{
+            selectedRowKeys,
+            onChange: (keys) => setSelectedRowKeys(keys as number[]),
+            // 编辑中的行禁止勾选，避免脏数据被误导出/误删
+            getCheckboxProps: (record: any) => ({
+              disabled: editingCell?.row === record.key,
+            }),
+          }}
           columns={tableColumns}
           dataSource={dataSource}
           loading={loading}
@@ -995,6 +1188,90 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
           >
             {ddl || "(无)"}
           </pre>
+        )}
+      </Modal>
+      <Modal
+        title="确认删除"
+        open={deleteOpen}
+        onCancel={() => {
+          if (deleting) return;
+          setDeleteOpen(false);
+          setDeletePreviewOpen(false);
+        }}
+        width={680}
+        maskClosable={!deleting}
+        footer={[
+          <Button
+            key="cancel"
+            disabled={deleting}
+            onClick={() => {
+              setDeleteOpen(false);
+              setDeletePreviewOpen(false);
+            }}
+          >
+            取消
+          </Button>,
+          <Button
+            key="preview"
+            icon={<EyeOutlined />}
+            onClick={() => setDeletePreviewOpen((v) => !v)}
+          >
+            {deletePreviewOpen ? "收起 SQL" : "SQL Preview"}
+          </Button>,
+          <Button
+            key="confirm"
+            type="primary"
+            danger
+            loading={deleting}
+            icon={<DeleteOutlined />}
+            onClick={confirmDelete}
+          >
+            确认
+          </Button>,
+        ]}
+      >
+        <Typography.Paragraph>
+          即将从 <Typography.Text code>{tab.schema}.{tab.table}</Typography.Text> 删除{" "}
+          <Typography.Text strong>{selectedRowKeys.length}</Typography.Text> 行,操作不可撤销。
+        </Typography.Paragraph>
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+          删除将按主键 ({pkCols.join(", ") || "无"}) 精确匹配,每行生成一条 DELETE 语句。
+        </Typography.Paragraph>
+        {deletePreviewOpen && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
+              <Button
+                size="small"
+                icon={<CopyOutlined />}
+                onClick={() => {
+                  const text = generateDeleteSQL().join("\n");
+                  if (!text) {
+                    message.warning("无可复制的 SQL");
+                    return;
+                  }
+                  navigator.clipboard.writeText(text);
+                  message.success("已复制 SQL");
+                }}
+              >
+                复制
+              </Button>
+            </div>
+            <pre
+              style={{
+                margin: 0,
+                background: "#0f172a",
+                color: "#e2e8f0",
+                padding: 12,
+                borderRadius: 4,
+                maxHeight: 320,
+                overflow: "auto",
+                fontSize: 12,
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {generateDeleteSQL().join("\n") || "(无)"}
+            </pre>
+          </div>
         )}
       </Modal>
     </div>

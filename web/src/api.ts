@@ -130,11 +130,12 @@ export const api = {
         params: { schema, table, ...(database ? { database } : {}) },
       })
       .then((r) => r.data),
-  execute: (connID: number, sql: string, database?: string) =>
+  execute: (connID: number, sql: string, database?: string, signal?: AbortSignal) =>
     http
       .post<ExecuteResponse>(
         `/connections/${connID}/execute${database ? `?database=${encodeURIComponent(database)}` : ""}`,
-        { sql }
+        { sql },
+        { signal }
       )
       .then((r) => r.data),
 
