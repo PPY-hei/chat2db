@@ -6,6 +6,7 @@ import {
   Input,
   Modal,
   Popover,
+  Segmented,
   Select,
   Space,
   Table,
@@ -33,6 +34,7 @@ import { api } from "../api";
 import type { ColumnInfo, ExecuteResponse } from "../types";
 import type { OpenedTab } from "../pages/MainLayout";
 import { ROLE_TAG_COLOR, canWrite } from "../utils/role";
+import TableStructureView from "./TableStructureView";
 
 interface Props {
   tab: OpenedTab;
@@ -175,6 +177,7 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
   const [ddlOpen, setDdlOpen] = useState(false);
   const [ddl, setDdl] = useState<string>("");
   const [ddlLoading, setDdlLoading] = useState(false);
+  const [view, setView] = useState<"data" | "structure" | "ddl">("data");
 
   // 筛选与排序
   const [draftFilters, setDraftFilters] = useState<FilterCond[]>([]); // 未应用的编辑
@@ -292,6 +295,19 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
       setDdlLoading(false);
     }
   };
+
+  // 切到 DDL 视图时按需拉取（复用 ddl/ddlLoading state）
+  useEffect(() => {
+    if (view === "ddl" && !ddl && !ddlLoading && tab.schema && tab.table) {
+      setDdlLoading(true);
+      api
+        .getTableDDL(tab.connID, tab.schema, tab.table, tab.database)
+        .then((res) => setDdl(res.ddl))
+        .catch((e: any) => message.error(e?.response?.data?.error ?? "DDL 加载失败"))
+        .finally(() => setDdlLoading(false));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
 
   useEffect(() => {
     setPage(1);
@@ -902,6 +918,18 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
           <Tag color={ROLE_TAG_COLOR[tab.role]}>
             {tab.role}
           </Tag>
+          <Segmented
+            size="small"
+            value={view}
+            onChange={(v) => setView(v as "data" | "structure" | "ddl")}
+            options={[
+              { label: "数据", value: "data" },
+              { label: "结构", value: "structure" },
+              { label: "DDL", value: "ddl" },
+            ]}
+          />
+          {view === "data" && (
+          <>
           <Button size="small" icon={<ReloadOutlined />} onClick={reload} loading={loading}>
             刷新
           </Button>
@@ -1005,18 +1033,53 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
               </Tooltip>
             </>
           )}
+          </>
+          )}
         </Space>
-        {result?.truncated && (
+        {view === "data" && result?.truncated && (
           <Tag color="orange" style={{ marginLeft: 8 }}>
             结果已截断
           </Tag>
         )}
-        {total !== null && (
+        {view === "data" && total !== null && (
           <Tag color="default" style={{ marginLeft: "auto" }}>
             共 {total} 行
           </Tag>
         )}
       </div>
+      {view === "structure" && (
+        <TableStructureView
+          connID={tab.connID}
+          database={tab.database}
+          schema={tab.schema ?? ""}
+          table={tab.table ?? ""}
+          driver={tab.driver ?? "postgres"}
+          role={tab.role}
+        />
+      )}
+      {view === "ddl" && (
+        <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
+          {ddlLoading ? (
+            <div style={{ padding: 24, textAlign: "center" }}>加载中...</div>
+          ) : (
+            <pre
+              style={{
+                background: "#0f172a",
+                color: "#e2e8f0",
+                padding: 12,
+                borderRadius: 4,
+                overflow: "auto",
+                fontSize: 12,
+                margin: 0,
+              }}
+            >
+              {ddl || "(无)"}
+            </pre>
+          )}
+        </div>
+      )}
+      {view === "data" && (
+      <>
       <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
         <Table
           size="small"
@@ -1097,6 +1160,8 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
             该表无主键，不支持内联编辑。请在 SQL 窗口手动执行 UPDATE。
           </Typography.Text>
         </div>
+      )}
+      </>
       )}
       <Modal
         title="SQL Preview"

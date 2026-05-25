@@ -52,6 +52,8 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
   const [testing, setTesting] = useState(false);
   const [sshEnabled, setSSHEnabled] = useState(false);
   const [sshAuthMethod, setSSHAuthMethod] = useState<string>("password");
+  const [proxyEnabled, setProxyEnabled] = useState(false);
+  const [proxyType, setProxyType] = useState<string>("http");
   const [sslMode, setSSLMode] = useState<string>("disable");
   const [driver, setDriver] = useState<string>("postgres");
   // 每个 driver 独立记忆 sslMode，切回时恢复（通用于任意驱动，不再只对 PG 特化）
@@ -94,9 +96,16 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
         ssh_port: editing.ssh_port || 22,
         ssh_user: editing.ssh_user,
         ssh_auth_method: editing.ssh_auth_method || "password",
+        proxy_enabled: editing.proxy_enabled,
+        proxy_type: editing.proxy_type || "http",
+        proxy_host: editing.proxy_host,
+        proxy_port: editing.proxy_port || undefined,
+        proxy_username: editing.proxy_username,
       });
       setSSHEnabled(!!editing.ssh_enabled);
       setSSHAuthMethod(editing.ssh_auth_method || "password");
+      setProxyEnabled(!!editing.proxy_enabled);
+      setProxyType(editing.proxy_type || "http");
       setSSLMode(editing.ssl_mode || "disable");
       setDriver(editing.driver || "");
     } else {
@@ -110,9 +119,13 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
         ssh_enabled: false,
         ssh_port: 22,
         ssh_auth_method: "password",
+        proxy_enabled: false,
+        proxy_type: "http",
       });
       setSSHEnabled(false);
       setSSHAuthMethod("password");
+      setProxyEnabled(false);
+      setProxyType("http");
       setSSLMode(firstDriver?.ssl_modes?.[0] ?? "disable");
       setDriver(firstDriver?.name ?? "");
     }
@@ -196,6 +209,7 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
   const currentDriver = driversByName[driver];
   // 驱动能力：未拿到时回落到"全开"避免误隐藏 UI；拿到后严格按 Capabilities 显隐
   const supportsSSH = currentDriver ? currentDriver.supports_ssh : true;
+  const supportsProxy = currentDriver ? currentDriver.supports_proxy : true;
   const supportsMTLS = currentDriver ? currentDriver.supports_mtls : true;
   const sslOptions = currentDriver?.ssl_modes?.length
     ? currentDriver.ssl_modes.map((s) => ({ label: s, value: s }))
@@ -409,6 +423,80 @@ export default function ConnectionFormModal({ open, groupID, editing, onClose, o
                           </Form.Item>
                         </>
                       )}
+                    </>
+                  )}
+                </>
+              ),
+            },
+          ]}
+        />
+        )}
+
+        {/* HTTP/SOCKS5 代理（仅支持代理的驱动展示） */}
+        {supportsProxy && (
+        <Collapse
+          ghost
+          size="small"
+          style={{ marginBottom: 16 }}
+          items={[
+            {
+              key: "proxy",
+              label: (
+                <Typography.Text strong>
+                  代理 {proxyEnabled && <Typography.Text type="success">(已启用)</Typography.Text>}
+                </Typography.Text>
+              ),
+              children: (
+                <>
+                  <Form.Item name="proxy_enabled" label="启用代理" valuePropName="checked">
+                    <Switch
+                      checkedChildren="开"
+                      unCheckedChildren="关"
+                      onChange={(v) => setProxyEnabled(v)}
+                    />
+                  </Form.Item>
+                  {proxyEnabled && (
+                    <>
+                      <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+                        通过 HTTP/SOCKS5 代理中转访问内网数据库。上方主机地址应填写
+                        <b>代理服务器视角</b>可达的数据库地址（通常是内网 IP）。
+                        代理与 SSH 隧道互斥，二者同时开启时优先走 SSH。
+                      </Typography.Paragraph>
+                      <Form.Item name="proxy_type" label="代理类型">
+                        <Radio.Group onChange={(e) => setProxyType(e.target.value)}>
+                          <Radio value="http">HTTP CONNECT</Radio>
+                          <Radio value="socks5">SOCKS5</Radio>
+                        </Radio.Group>
+                      </Form.Item>
+                      <Space.Compact block>
+                        <Form.Item
+                          name="proxy_host"
+                          label="代理主机"
+                          style={{ width: "70%" }}
+                          rules={[{ required: proxyEnabled }]}
+                        >
+                          <Input placeholder="代理 IP / 域名" />
+                        </Form.Item>
+                        <Form.Item
+                          name="proxy_port"
+                          label="代理端口"
+                          style={{ width: "30%" }}
+                          rules={[{ required: proxyEnabled }]}
+                        >
+                          <InputNumber style={{ width: "100%" }} min={1} max={65535} />
+                        </Form.Item>
+                      </Space.Compact>
+                      <Space.Compact block>
+                        <Form.Item name="proxy_username" label="用户名（可选）" style={{ width: "50%" }}>
+                          <Input autoComplete="off" placeholder="留空表示无需认证" />
+                        </Form.Item>
+                        <Form.Item name="proxy_password" label="密码（可选）" style={{ width: "50%" }}>
+                          <Input.Password autoComplete="new-password" placeholder="留空表示无需认证" />
+                        </Form.Item>
+                      </Space.Compact>
+                      <Typography.Text type="warning" style={{ fontSize: 12 }}>
+                        {proxyType === "socks5" ? "SOCKS5 代理" : "HTTP CONNECT 代理"}
+                      </Typography.Text>
                     </>
                   )}
                 </>

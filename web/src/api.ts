@@ -9,6 +9,7 @@ import type {
   DriverInfo,
   ExecuteResponse,
   Group,
+  IndexInfo,
   Member,
   MeResponse,
   SavedQuery,
@@ -125,6 +126,12 @@ export const api = {
   listColumns: (connID: number, schema: string, table: string, database?: string) =>
     http
       .get<ColumnInfo[]>(`/connections/${connID}/columns`, {
+        params: { schema, table, ...(database ? { database } : {}) },
+      })
+      .then((r) => r.data),
+  listIndexes: (connID: number, schema: string, table: string, database?: string) =>
+    http
+      .get<IndexInfo[]>(`/connections/${connID}/indexes`, {
         params: { schema, table, ...(database ? { database } : {}) },
       })
       .then((r) => r.data),

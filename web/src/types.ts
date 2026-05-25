@@ -42,6 +42,12 @@ export interface Connection {
   ssh_port: number;
   ssh_user: string;
   ssh_auth_method: string;
+  // HTTP/SOCKS5 代理
+  proxy_enabled: boolean;
+  proxy_type: string;
+  proxy_host: string;
+  proxy_port: number;
+  proxy_username: string;
   created_by_id: number;
   created_at: string;
   updated_at: string;
@@ -70,6 +76,16 @@ export interface ColumnInfo {
   nullable: boolean;
   default_value?: string | null;
   is_primary: boolean;
+  comment?: string;
+  auto_increment?: boolean;
+}
+
+export interface IndexInfo {
+  name: string;
+  columns: string[];
+  unique: boolean;
+  primary: boolean;
+  method?: string;
 }
 
 export interface QueryResult {
@@ -97,6 +113,7 @@ export interface DriverInfo {
   default_port: number;
   ssl_modes: string[];
   supports_ssh: boolean;
+  supports_proxy: boolean;
   supports_mtls: boolean;
   schema_support: boolean;
 }

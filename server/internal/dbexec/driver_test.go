@@ -30,6 +30,9 @@ func (s *stubDriver) ListTables(_ context.Context, _ string) ([]TableInfo, error
 func (s *stubDriver) ListColumns(_ context.Context, _, _ string) ([]ColumnInfo, error) {
 	return nil, nil
 }
+func (s *stubDriver) ListIndexes(_ context.Context, _, _ string) ([]IndexInfo, error) {
+	return nil, nil
+}
 func (s *stubDriver) GenerateTableDDL(_ context.Context, _, _ string) (string, error) {
 	return "", nil
 }

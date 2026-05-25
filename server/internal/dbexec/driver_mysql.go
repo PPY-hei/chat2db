@@ -35,6 +35,7 @@ func (d *mysqlDriver) Capabilities() Capabilities {
 		// MySQL 目前实现映射：disable / require(=true,skip-verify) / verify-ca
 		SSLModes:      []string{"disable", "require", "verify-ca"},
 		SupportsSSH:   true,
+		SupportsProxy: true,
 		SupportsMTLS:  true,
 		SchemaSupport: false, // MySQL 中 Database 即 Schema
 	}
@@ -66,6 +67,10 @@ func (d *mysqlDriver) ListTables(ctx context.Context, schema string) ([]TableInf
 
 func (d *mysqlDriver) ListColumns(ctx context.Context, schema, table string) ([]ColumnInfo, error) {
 	return mysqlListColumns(ctx, d.conn, schema, table)
+}
+
+func (d *mysqlDriver) ListIndexes(ctx context.Context, schema, table string) ([]IndexInfo, error) {
+	return mysqlListIndexes(ctx, d.conn, schema, table)
 }
 
 func (d *mysqlDriver) GenerateTableDDL(ctx context.Context, schema, table string) (string, error) {

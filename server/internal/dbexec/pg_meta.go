@@ -91,7 +91,9 @@ func pgListColumns(ctx context.Context, c *model.Connection, schema, table strin
   pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
   NOT a.attnotnull AS nullable,
   pg_get_expr(ad.adbin, ad.adrelid) AS default_value,
-  COALESCE(pk.is_primary, false) AS is_primary
+  COALESCE(pk.is_primary, false) AS is_primary,
+  col_description(cls.oid, a.attnum) AS comment,
+  (a.attidentity <> '' OR COALESCE(pg_get_expr(ad.adbin, ad.adrelid), '') LIKE 'nextval(%') AS auto_increment
 FROM pg_attribute a
 JOIN pg_class cls ON cls.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = cls.relnamespace
@@ -110,20 +112,75 @@ ORDER BY a.attnum`
 	}
 	out := make([]ColumnInfo, 0, len(res.Rows))
 	for _, r := range res.Rows {
-		if len(r) < 5 {
+		if len(r) < 7 {
 			continue
 		}
 		ci := ColumnInfo{
-			Name:      asString(r[0]),
-			DataType:  asString(r[1]),
-			Nullable:  asBool(r[2]),
-			IsPrimary: asBool(r[4]),
+			Name:          asString(r[0]),
+			DataType:      asString(r[1]),
+			Nullable:      asBool(r[2]),
+			IsPrimary:     asBool(r[4]),
+			AutoIncrement: asBool(r[6]),
 		}
 		if r[3] != nil {
 			s := asString(r[3])
 			ci.DefaultValue = &s
 		}
+		if r[5] != nil {
+			s := asString(r[5])
+			if s != "" {
+				ci.Comment = &s
+			}
+		}
 		out = append(out, ci)
+	}
+	return out, nil
+}
+
+// pgListIndexes 返回 PG 表的索引（结构化：名/列/唯一/主键/方法）。
+func pgListIndexes(ctx context.Context, c *model.Connection, schema, table string) ([]IndexInfo, error) {
+	q := `SELECT i.relname AS index_name,
+  ix.indisunique AS is_unique,
+  ix.indisprimary AS is_primary,
+  am.amname AS method,
+  a.attname AS column_name
+FROM pg_index ix
+JOIN pg_class i ON i.oid = ix.indexrelid
+JOIN pg_class t ON t.oid = ix.indrelid
+JOIN pg_namespace n ON n.oid = t.relnamespace
+JOIN pg_am am ON am.oid = i.relam
+JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord) ON true
+JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+WHERE n.nspname = $1 AND t.relname = $2
+ORDER BY i.relname, k.ord`
+	res, err := Exec(ctx, c, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	// 按 index 名聚合列（结果已按 index_name, ord 排序）
+	order := make([]string, 0)
+	byName := make(map[string]*IndexInfo)
+	for _, r := range res.Rows {
+		if len(r) < 5 {
+			continue
+		}
+		name := asString(r[0])
+		idx, ok := byName[name]
+		if !ok {
+			idx = &IndexInfo{
+				Name:    name,
+				Unique:  asBool(r[1]),
+				Primary: asBool(r[2]),
+				Method:  asString(r[3]),
+			}
+			byName[name] = idx
+			order = append(order, name)
+		}
+		idx.Columns = append(idx.Columns, asString(r[4]))
+	}
+	out := make([]IndexInfo, 0, len(order))
+	for _, name := range order {
+		out = append(out, *byName[name])
 	}
 	return out, nil
 }

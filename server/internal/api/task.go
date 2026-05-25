@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -246,9 +247,18 @@ func DownloadTaskArtifact(c *gin.Context) {
 	}
 	// 路径越界防护：必须位于 artifactDir 之下
 	artDir := service.TaskArtifactDir()
-	absArt, _ := filepath.Abs(artDir)
-	absFile, _ := filepath.Abs(t.FilePath)
-	if !strings.HasPrefix(absFile, absArt) {
+	absArt, err := filepath.Abs(artDir)
+	if err != nil {
+		internal(c, fmt.Errorf("resolve artifact dir: %w", err))
+		return
+	}
+	absFile, err := filepath.Abs(t.FilePath)
+	if err != nil {
+		internal(c, fmt.Errorf("resolve file path: %w", err))
+		return
+	}
+	// 确保文件路径在产物目录内（加上路径分隔符防止前缀绕过）
+	if !strings.HasPrefix(absFile, absArt+string(os.PathSeparator)) {
 		forbidden(c, errors.New("invalid artifact path"))
 		return
 	}

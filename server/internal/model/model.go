@@ -109,6 +109,13 @@ type Connection struct {
 	SSHPasswordEnc   string `gorm:"size:1024" json:"-"`
 	SSHPrivateKeyEnc string `gorm:"type:text" json:"-"`
 	SSHPassphraseEnc string `gorm:"size:1024" json:"-"` // 私钥的 passphrase
+	// HTTP/SOCKS5 代理（与 SSH 隧道互斥，SSH 优先）
+	ProxyEnabled     bool   `gorm:"not null;default:false" json:"proxy_enabled"`
+	ProxyType        string `gorm:"size:16" json:"proxy_type"` // "http" | "socks5"
+	ProxyHost        string `gorm:"size:255" json:"proxy_host"`
+	ProxyPort        int    `json:"proxy_port"`
+	ProxyUsername    string `gorm:"size:128" json:"proxy_username"`
+	ProxyPasswordEnc string `gorm:"size:1024" json:"-"` // 加密存储，不外泄
 	CreatedByID uint           `gorm:"not null" json:"created_by_id"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`

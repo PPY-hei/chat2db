@@ -81,7 +81,9 @@ func mysqlListColumns(ctx context.Context, c *model.Connection, schema, table st
   c.COLUMN_TYPE,
   CASE c.IS_NULLABLE WHEN 'YES' THEN 1 ELSE 0 END AS nullable,
   c.COLUMN_DEFAULT,
-  CASE WHEN kcu.COLUMN_NAME IS NOT NULL THEN 1 ELSE 0 END AS is_primary
+  CASE WHEN kcu.COLUMN_NAME IS NOT NULL THEN 1 ELSE 0 END AS is_primary,
+  c.COLUMN_COMMENT,
+  CASE WHEN c.EXTRA LIKE '%auto_increment%' THEN 1 ELSE 0 END AS auto_increment
 FROM information_schema.COLUMNS c
 LEFT JOIN information_schema.KEY_COLUMN_USAGE kcu
   ON kcu.TABLE_SCHEMA = c.TABLE_SCHEMA
@@ -97,20 +99,68 @@ ORDER BY c.ORDINAL_POSITION`
 	}
 	out := make([]ColumnInfo, 0, len(res.Rows))
 	for _, r := range res.Rows {
-		if len(r) < 5 {
+		if len(r) < 7 {
 			continue
 		}
 		ci := ColumnInfo{
-			Name:      asString(r[0]),
-			DataType:  asString(r[1]),
-			Nullable:  asBool(r[2]),
-			IsPrimary: asBool(r[4]),
+			Name:          asString(r[0]),
+			DataType:      asString(r[1]),
+			Nullable:      asBool(r[2]),
+			IsPrimary:     asBool(r[4]),
+			AutoIncrement: asBool(r[6]),
 		}
 		if r[3] != nil {
 			s := asString(r[3])
 			ci.DefaultValue = &s
 		}
+		if r[5] != nil {
+			s := asString(r[5])
+			if s != "" {
+				ci.Comment = &s
+			}
+		}
 		out = append(out, ci)
+	}
+	return out, nil
+}
+
+// mysqlListIndexes 返回 MySQL 表的索引（按 information_schema.STATISTICS 聚合）。
+func mysqlListIndexes(ctx context.Context, c *model.Connection, schema, table string) ([]IndexInfo, error) {
+	dbName := c.Database
+	if schema != "" {
+		dbName = schema
+	}
+	q := `SELECT INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, INDEX_TYPE
+FROM information_schema.STATISTICS
+WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+ORDER BY INDEX_NAME, SEQ_IN_INDEX`
+	res, err := mysqlExec(ctx, c, q, dbName, table)
+	if err != nil {
+		return nil, err
+	}
+	order := make([]string, 0)
+	byName := make(map[string]*IndexInfo)
+	for _, r := range res.Rows {
+		if len(r) < 5 {
+			continue
+		}
+		name := asString(r[0])
+		idx, ok := byName[name]
+		if !ok {
+			idx = &IndexInfo{
+				Name:    name,
+				Unique:  !asBool(r[1]), // NON_UNIQUE=0 表示唯一
+				Primary: name == "PRIMARY",
+				Method:  asString(r[4]),
+			}
+			byName[name] = idx
+			order = append(order, name)
+		}
+		idx.Columns = append(idx.Columns, asString(r[3]))
+	}
+	out := make([]IndexInfo, 0, len(order))
+	for _, name := range order {
+		out = append(out, *byName[name])
 	}
 	return out, nil
 }

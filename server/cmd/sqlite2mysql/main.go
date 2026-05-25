@@ -60,6 +60,8 @@ var tables = []tableSpec{
 			"sslca_cert_enc", "ssl_client_cert_enc", "ssl_client_key_enc",
 			"ssh_enabled", "ssh_host", "ssh_port", "ssh_user", "ssh_auth_method",
 			"ssh_password_enc", "ssh_private_key_enc", "ssh_passphrase_enc",
+			"proxy_enabled", "proxy_type", "proxy_host", "proxy_port",
+			"proxy_username", "proxy_password_enc",
 			"created_by_id", "created_at", "updated_at", "deleted_at",
 		},
 	},
@@ -206,11 +208,12 @@ func coerce(v any, column string) any {
 			"ssl_mode",
 			"sslca_cert_enc", "ssl_client_cert_enc", "ssl_client_key_enc",
 			"ssh_host", "ssh_user", "ssh_auth_method",
-			"ssh_password_enc", "ssh_private_key_enc", "ssh_passphrase_enc":
+			"ssh_password_enc", "ssh_private_key_enc", "ssh_passphrase_enc",
+			"proxy_type", "proxy_host", "proxy_username", "proxy_password_enc":
 			return ""
 		case "ssh_port":
 			return 22
-		case "share_llm", "ssh_enabled":
+		case "share_llm", "ssh_enabled", "proxy_enabled", "proxy_port":
 			return 0
 		}
 		return nil

@@ -52,6 +52,7 @@ func RegisterRoutes(r *gin.Engine) {
 		authed.GET("/connections/:connID/schemas", ListSchemas)
 		authed.GET("/connections/:connID/tables", ListTables)
 		authed.GET("/connections/:connID/columns", ListColumns)
+		authed.GET("/connections/:connID/indexes", ListIndexes)
 		authed.GET("/connections/:connID/ddl", TableDDL)
 		authed.POST("/connections/:connID/execute", ExecuteSQL)
 

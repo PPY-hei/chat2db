@@ -36,6 +36,7 @@ func (d *pgDriver) Capabilities() Capabilities {
 		DefaultPort:   5432,
 		SSLModes:      []string{"disable", "require", "verify-ca", "verify-full"},
 		SupportsSSH:   true,
+		SupportsProxy: true,
 		SupportsMTLS:  true,
 		SchemaSupport: true,
 	}
@@ -67,6 +68,10 @@ func (d *pgDriver) ListTables(ctx context.Context, schema string) ([]TableInfo, 
 
 func (d *pgDriver) ListColumns(ctx context.Context, schema, table string) ([]ColumnInfo, error) {
 	return pgListColumns(ctx, d.conn, schema, table)
+}
+
+func (d *pgDriver) ListIndexes(ctx context.Context, schema, table string) ([]IndexInfo, error) {
+	return pgListIndexes(ctx, d.conn, schema, table)
 }
 
 func (d *pgDriver) GenerateTableDDL(ctx context.Context, schema, table string) (string, error) {

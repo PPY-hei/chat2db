@@ -151,6 +151,11 @@ func getPool(ctx context.Context, c *model.Connection) (*pgxpool.Pool, error) {
 		cfg.ConnConfig.DialFunc = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return net.DialTimeout("tcp", localAddr, 10*time.Second)
 		}
+	} else if proxyEnabled(c) {
+		// 经 HTTP/SOCKS5 代理拨号到真实目标地址（addr 即 DSN 解析出的真实 host:port）
+		cfg.ConnConfig.DialFunc = func(ctx context.Context, _, addr string) (net.Conn, error) {
+			return proxyDialContext(ctx, c, addr)
+		}
 	}
 
 	p, err := pgxpool.NewWithConfig(ctx, cfg)
@@ -194,6 +199,10 @@ func pgPing(ctx context.Context, c *model.Connection) error {
 		localAddr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 		cfg.DialFunc = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return net.DialTimeout("tcp", localAddr, 10*time.Second)
+		}
+	} else if proxyEnabled(c) {
+		cfg.DialFunc = func(ctx context.Context, _, addr string) (net.Conn, error) {
+			return proxyDialContext(ctx, c, addr)
 		}
 	}
 	conn, err := pgx.ConnectConfig(ctx, cfg)

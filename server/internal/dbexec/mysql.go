@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,17 @@ func mysqlDSN(c *model.Connection) (string, error) {
 	cfg.Passwd = pwd
 	cfg.Net = "tcp"
 	cfg.Addr = fmt.Sprintf("%s:%d", host, port)
+
+	// 代理：注册自定义 net，让 go-sql-driver 经代理拨号到真实地址。
+	// 与 SSH 互斥（proxyEnabled 内部已判断），用 connID 派生唯一注册名。
+	if proxyEnabled(c) {
+		netName := fmt.Sprintf("chat2db-proxy-%d", c.ID)
+		target := cfg.Addr
+		mysqldriver.RegisterDialContext(netName, func(ctx context.Context, _ string) (net.Conn, error) {
+			return proxyDialContext(ctx, c, target)
+		})
+		cfg.Net = netName
+	}
 	cfg.DBName = dbName
 	cfg.Params = map[string]string{
 		"charset": "utf8mb4",

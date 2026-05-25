@@ -447,6 +447,9 @@ func TestConnection(c *gin.Context) {
 			Database: in.Draft.Database, Username: in.Draft.Username, SSLMode: in.Draft.SSLMode,
 			SSHEnabled: in.Draft.SSHEnabled, SSHHost: in.Draft.SSHHost, SSHPort: in.Draft.SSHPort,
 			SSHUser: in.Draft.SSHUser, SSHAuthMethod: in.Draft.SSHAuthMethod,
+			ProxyEnabled: in.Draft.ProxyEnabled, ProxyType: in.Draft.ProxyType,
+			ProxyHost: in.Draft.ProxyHost, ProxyPort: in.Draft.ProxyPort,
+			ProxyUsername: in.Draft.ProxyUsername,
 		}
 		// encrypt in-memory so DecryptPassword works
 		enc, err := service.EncryptForTest(in.Draft.Password)
@@ -514,6 +517,19 @@ func TestConnection(c *gin.Context) {
 		}
 		if conn.SSHPort == 0 {
 			conn.SSHPort = 22
+		}
+		// 代理凭据
+		if in.Draft.ProxyPassword != "" {
+			enc, err := cryptopkg.EncryptString(in.Draft.ProxyPassword, key)
+			if err != nil {
+				rec.fail(err)
+				badRequest(c, err)
+				return
+			}
+			conn.ProxyPasswordEnc = enc
+		}
+		if conn.ProxyEnabled && conn.ProxyType == "" {
+			conn.ProxyType = "http"
 		}
 	} else {
 		err := errors.New("missing connection_id or draft")
@@ -619,6 +635,27 @@ func ListColumns(c *gin.Context) {
 		return
 	}
 	rows, err := dbexec.ListColumns(c.Request.Context(), conn, schema, table)
+	if err != nil {
+		internal(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, rows)
+}
+
+// ListIndexes 返回给定表的索引信息。
+func ListIndexes(c *gin.Context) {
+	conn, _, err := resolveConn(c)
+	if err != nil {
+		forbidden(c, err)
+		return
+	}
+	schema := c.Query("schema")
+	table := c.Query("table")
+	if schema == "" || table == "" {
+		badRequest(c, errors.New("schema and table are required"))
+		return
+	}
+	rows, err := dbexec.ListIndexes(c.Request.Context(), conn, schema, table)
 	if err != nil {
 		internal(c, err)
 		return

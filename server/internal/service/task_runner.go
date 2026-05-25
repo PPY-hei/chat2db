@@ -318,9 +318,18 @@ func formatCSVCell(v any) string {
 	}
 	switch x := v.(type) {
 	case string:
+		// 防止 CSV 注入：如果以公式字符开头，添加单引号前缀
+		if len(x) > 0 && (x[0] == '=' || x[0] == '+' || x[0] == '-' || x[0] == '@') {
+			return "'" + x
+		}
 		return x
 	case []byte:
-		return string(x)
+		s := string(x)
+		// 同样防护 []byte 转换后的字符串
+		if len(s) > 0 && (s[0] == '=' || s[0] == '+' || s[0] == '-' || s[0] == '@') {
+			return "'" + s
+		}
+		return s
 	case int:
 		return strconv.Itoa(x)
 	case int32:

@@ -28,11 +28,22 @@ type TableInfo struct {
 
 // ColumnInfo describes a column.
 type ColumnInfo struct {
-	Name         string  `json:"name"`
-	DataType     string  `json:"data_type"`
-	Nullable     bool    `json:"nullable"`
-	DefaultValue *string `json:"default_value,omitempty"`
-	IsPrimary    bool    `json:"is_primary"`
+	Name          string  `json:"name"`
+	DataType      string  `json:"data_type"`
+	Nullable      bool    `json:"nullable"`
+	DefaultValue  *string `json:"default_value,omitempty"`
+	IsPrimary     bool    `json:"is_primary"`
+	Comment       *string `json:"comment,omitempty"`
+	AutoIncrement bool    `json:"auto_increment"`
+}
+
+// IndexInfo describes a table index.
+type IndexInfo struct {
+	Name    string   `json:"name"`
+	Columns []string `json:"columns"`
+	Unique  bool     `json:"unique"`
+	Primary bool     `json:"primary"`
+	Method  string   `json:"method,omitempty"` // btree/hash (pg) | BTREE/... (mysql)
 }
 
 // WithDatabase 返回一个 connection 的浅拷贝，Database 字段被替换为指定值。
@@ -88,6 +99,15 @@ func ListColumns(ctx context.Context, c *model.Connection, schema, table string)
 		return nil, err
 	}
 	return d.ListColumns(ctx, schema, table)
+}
+
+// ListIndexes 返回指定表的索引信息。
+func ListIndexes(ctx context.Context, c *model.Connection, schema, table string) ([]IndexInfo, error) {
+	d, err := Open(c)
+	if err != nil {
+		return nil, err
+	}
+	return d.ListIndexes(ctx, schema, table)
 }
 
 // GenerateTableDDL 生成可读的表 DDL（列定义 + 主键 + 索引 + 注释）。

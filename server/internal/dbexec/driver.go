@@ -47,6 +47,9 @@ type Driver interface {
 	// ListColumns 返回指定表的列信息。
 	ListColumns(ctx context.Context, schema, table string) ([]ColumnInfo, error)
 
+	// ListIndexes 返回指定表的索引信息。
+	ListIndexes(ctx context.Context, schema, table string) ([]IndexInfo, error)
+
 	// GenerateTableDDL 返回表的可读 DDL。
 	GenerateTableDDL(ctx context.Context, schema, table string) (string, error)
 
@@ -67,6 +70,9 @@ type Capabilities struct {
 
 	// SupportsSSH 表示驱动是否可以跑在 SSH 隧道之上。
 	SupportsSSH bool `json:"supports_ssh"`
+
+	// SupportsProxy 表示驱动是否可以经 HTTP/SOCKS5 代理拨号。
+	SupportsProxy bool `json:"supports_proxy"`
 
 	// SupportsMTLS 表示驱动是否支持双向 TLS（客户端证书 + 私钥）。
 	SupportsMTLS bool `json:"supports_mtls"`

@@ -33,6 +33,13 @@ type ConnectionInput struct {
 	SSHPassword   string `json:"ssh_password,omitempty"`
 	SSHPrivateKey string `json:"ssh_private_key,omitempty"`
 	SSHPassphrase string `json:"ssh_passphrase,omitempty"`
+	// HTTP/SOCKS5 代理（与 SSH 互斥）
+	ProxyEnabled  bool   `json:"proxy_enabled"`
+	ProxyType     string `json:"proxy_type"` // "http" | "socks5"
+	ProxyHost     string `json:"proxy_host"`
+	ProxyPort     int    `json:"proxy_port"`
+	ProxyUsername string `json:"proxy_username"`
+	ProxyPassword string `json:"proxy_password,omitempty"`
 }
 
 func encryptOptional(plain string, key []byte) (string, error) {
@@ -82,6 +89,7 @@ func CreateConnection(actorID, groupID uint, in ConnectionInput) (*model.Connect
 		SSLMode:    in.SSLMode,
 		CreatedByID: actorID,
 		SSHEnabled: in.SSHEnabled,
+		ProxyEnabled: in.ProxyEnabled,
 	}
 	// SSL 证书
 	if c.SSLCACertEnc, err = encryptOptional(in.SSLCACert, key); err != nil {
@@ -115,6 +123,22 @@ func CreateConnection(actorID, groupID uint, in ConnectionInput) (*model.Connect
 			return nil, err
 		}
 		if c.SSHPassphraseEnc, err = encryptOptional(in.SSHPassphrase, key); err != nil {
+			return nil, err
+		}
+	}
+	// 代理
+	if in.ProxyEnabled {
+		if in.ProxyHost == "" {
+			return nil, errors.New("proxy_host is required when proxy is enabled")
+		}
+		c.ProxyType = in.ProxyType
+		if c.ProxyType == "" {
+			c.ProxyType = "http"
+		}
+		c.ProxyHost = in.ProxyHost
+		c.ProxyPort = in.ProxyPort
+		c.ProxyUsername = in.ProxyUsername
+		if c.ProxyPasswordEnc, err = encryptOptional(in.ProxyPassword, key); err != nil {
 			return nil, err
 		}
 	}
@@ -225,6 +249,37 @@ func UpdateConnection(actorID, connID uint, in ConnectionInput) (*model.Connecti
 		c.SSHPasswordEnc = ""
 		c.SSHPrivateKeyEnc = ""
 		c.SSHPassphraseEnc = ""
+	}
+	// 代理
+	c.ProxyEnabled = in.ProxyEnabled
+	if in.ProxyEnabled {
+		if in.ProxyType != "" {
+			c.ProxyType = in.ProxyType
+		}
+		if c.ProxyType == "" {
+			c.ProxyType = "http"
+		}
+		if in.ProxyHost != "" {
+			c.ProxyHost = in.ProxyHost
+		}
+		if in.ProxyPort != 0 {
+			c.ProxyPort = in.ProxyPort
+		}
+		// 用户名允许置空（关闭认证），故只要开启代理就同步
+		c.ProxyUsername = in.ProxyUsername
+		if in.ProxyPassword != "" {
+			enc, err := encryptOptional(in.ProxyPassword, key)
+			if err != nil {
+				return nil, err
+			}
+			c.ProxyPasswordEnc = enc
+		}
+	} else {
+		c.ProxyType = ""
+		c.ProxyHost = ""
+		c.ProxyPort = 0
+		c.ProxyUsername = ""
+		c.ProxyPasswordEnc = ""
 	}
 	if err := db.Meta().Save(&c).Error; err != nil {
 		return nil, err
