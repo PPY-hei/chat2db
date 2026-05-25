@@ -453,6 +453,7 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
   const saveChanges = async () => {
     const stmts = generateUpdateSQL();
     if (stmts.length === 0) return;
+    const rowCount = stmts.length;
     setSaving(true);
     try {
       const sql = stmts.join("\n");
@@ -460,8 +461,7 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
       if (res.error) {
         message.error("保存失败：" + res.error);
       } else {
-        const affected = res.results?.reduce((sum, r) => sum + (r.rows_affected ?? 0), 0) ?? 0;
-        message.success(`已保存 ${affected} 行`);
+        message.success(`已保存 ${rowCount} 行`);
         setDirtyRows(new Map());
         setEditingCell(null);
         await fetchPage(page, pageSize, appliedFilters);
