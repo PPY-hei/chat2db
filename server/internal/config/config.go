@@ -76,7 +76,7 @@ func Load() *Config {
 		JWTSecret:             getEnv("JWT_SECRET", defaultJWTSecret),
 		JWTExpireHours:        getEnvInt("JWT_EXPIRE_HOURS", 72),
 		QueryMaxRows:          getEnvInt("QUERY_MAX_ROWS", 1000),
-		QueryTimeoutSec:       getEnvInt("QUERY_TIMEOUT_SECONDS", 30),
+		QueryTimeoutSec:       getEnvInt("QUERY_TIMEOUT_SECONDS", 300),
 		AuditRetention:        getEnvDuration("AUDIT_RETENTION", 90*24*time.Hour),
 		LogLevel:              parseLogLevel(getEnv("LOG_LEVEL", "info")),
 	}

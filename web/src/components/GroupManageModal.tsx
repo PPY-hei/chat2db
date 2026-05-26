@@ -17,7 +17,7 @@ import {
   Tooltip,
   Typography,
 } from "antd";
-import { TeamOutlined, UserAddOutlined, RobotOutlined } from "@ant-design/icons";
+import { TeamOutlined, UserAddOutlined, RobotOutlined, EditOutlined, SaveOutlined, CloseOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import type { Group, Member, Role } from "../types";
 import { ROLE_TAG_COLOR, canInviteMember, canManageGroup } from "../utils/role";
@@ -35,8 +35,11 @@ export default function GroupManageModal({ open, groups, onClose, onChanged }: P
   const [members, setMembers] = useState<Member[]>([]);
   const [createForm] = Form.useForm();
   const [memberForm] = Form.useForm();
+  const [editForm] = Form.useForm();
   const [creating, setCreating] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const prevOpenRef = useRef(false);
 
@@ -121,6 +124,39 @@ export default function GroupManageModal({ open, groups, onClose, onChanged }: P
     }
   };
 
+  const startEdit = () => {
+    if (!currentGroup) return;
+    editForm.setFieldsValue({
+      name: currentGroup.name,
+      description: currentGroup.description,
+    });
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setEditing(false);
+    editForm.resetFields();
+  };
+
+  const submitEdit = async () => {
+    if (!currentGroup) return;
+    const v = await editForm.validateFields();
+    setSaving(true);
+    try {
+      await api.updateGroup(currentGroup.id, {
+        name: v.name,
+        description: v.description,
+      });
+      message.success("修改成功");
+      await onChanged();
+      setEditing(false);
+    } catch (e: any) {
+      message.error(e?.response?.data?.error ?? "修改失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <Modal
       open={open}
@@ -152,13 +188,68 @@ export default function GroupManageModal({ open, groups, onClose, onChanged }: P
             ),
             children: (
               <div>
-                <Card size="small" style={{ marginBottom: 16 }}>
-                  <Typography.Paragraph style={{ marginBottom: 4 }}>
-                    <strong>{g.name}</strong>
-                  </Typography.Paragraph>
-                  <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                    {g.description || "无描述"} · {g.member_count} 名成员
-                  </Typography.Paragraph>
+                <Card
+                  size="small"
+                  style={{ marginBottom: 16 }}
+                  extra={
+                    isOwner && !editing ? (
+                      <Button
+                        type="link"
+                        size="small"
+                        icon={<EditOutlined />}
+                        onClick={startEdit}
+                      >
+                        编辑
+                      </Button>
+                    ) : null
+                  }
+                >
+                  {editing ? (
+                    <Form form={editForm} layout="vertical">
+                      <Form.Item
+                        name="name"
+                        label="组名称"
+                        rules={[{ required: true, message: "请输入组名称" }]}
+                        style={{ marginBottom: 12 }}
+                      >
+                        <Input placeholder="如：研发组、运维组" />
+                      </Form.Item>
+                      <Form.Item
+                        name="description"
+                        label="描述"
+                        style={{ marginBottom: 12 }}
+                      >
+                        <Input.TextArea rows={2} placeholder="可选" />
+                      </Form.Item>
+                      <Space>
+                        <Button
+                          type="primary"
+                          size="small"
+                          icon={<SaveOutlined />}
+                          loading={saving}
+                          onClick={submitEdit}
+                        >
+                          保存
+                        </Button>
+                        <Button
+                          size="small"
+                          icon={<CloseOutlined />}
+                          onClick={cancelEdit}
+                        >
+                          取消
+                        </Button>
+                      </Space>
+                    </Form>
+                  ) : (
+                    <>
+                      <Typography.Paragraph style={{ marginBottom: 4 }}>
+                        <strong>{g.name}</strong>
+                      </Typography.Paragraph>
+                      <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+                        {g.description || "无描述"} · {g.member_count} 名成员
+                      </Typography.Paragraph>
+                    </>
+                  )}
                 </Card>
 
                 {isOwner && (

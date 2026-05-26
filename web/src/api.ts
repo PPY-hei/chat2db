@@ -173,6 +173,31 @@ export const api = {
       .post<{ sql: string; explanation?: string; raw: string }>("/ai/chat", body)
       .then((r) => r.data),
 
+  // 文件上传
+  uploadFile: (formData: FormData) =>
+    http
+      .post<{
+        file_id: string;
+        filename: string;
+        size: number;
+        path: string;
+        uploaded_at: number;
+        file_type: string;
+        original_name: string;
+        data_summary?: string;
+      }>("/ai/upload", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+      .then((r) => r.data),
+
+  deleteUploadedFile: (fileID: string) =>
+    http.delete(`/ai/files/${fileID}`).then((r) => r.data),
+
+  executeScript: (body: { script: string; file_ids: string[]; language: string }) =>
+    http
+      .post<{ output: string; exit_code: number; success: boolean }>("/ai/execute-script", body)
+      .then((r) => r.data),
+
   // 审计日志（仅在任一组是 admin/owner 的用户可读，由后端按组隔离）
   listAuditLogs: (q: AuditLogQuery = {}) =>
     http

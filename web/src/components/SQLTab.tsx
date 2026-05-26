@@ -15,6 +15,8 @@ import {
   Tag,
   Tooltip,
   Typography,
+  Upload,
+  Progress,
 } from "antd";
 import {
   CaretRightOutlined,
@@ -24,6 +26,11 @@ import {
   CopyOutlined,
   DownloadOutlined,
   TeamOutlined,
+  PaperClipOutlined,
+  DeleteOutlined,
+  FileImageOutlined,
+  FileExcelOutlined,
+  FileTextOutlined,
 } from "@ant-design/icons";
 import Editor, { OnMount } from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
@@ -56,6 +63,18 @@ export default function SQLTab({ tab }: Props) {
     text: string;
   } | null>(null);
   const [aiSelExpanded, setAISelExpanded] = useState(false);
+
+  // 文件上传相关状态
+  interface UploadedFile {
+    file_id: string;
+    filename: string;
+    size: number;
+    file_type: string;
+    uploaded_at: number;
+    data_summary?: string; // 数据摘要
+  }
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [uploading, setUploading] = useState(false);
 
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
@@ -242,6 +261,7 @@ export default function SQLTab({ tab }: Props) {
   const openAI = () => {
     setAIPrompt("");
     setAIResp(null);
+    setUploadedFiles([]); // 清空之前上传的文件
     // 快照当前编辑器选区
     const ed = editorRef.current;
     const sel = ed?.getSelection();
@@ -311,13 +331,107 @@ export default function SQLTab({ tab }: Props) {
     return ddls.filter(Boolean).join("\n\n");
   };
 
+  // 从 SQL 中自动提取表名并获取 DDL
+  const extractTablesFromSQL = async (sql: string): Promise<string> => {
+    if (!sql.trim()) return "";
+
+    // 简单的 SQL 解析：提取 FROM 和 JOIN 后面的表名
+    // 支持格式：schema.table, "schema"."table", `schema`.`table`, table
+    const tablePattern = /(?:FROM|JOIN)\s+(?:([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*)?([a-zA-Z_][a-zA-Z0-9_]*)|(?:FROM|JOIN)\s+(?:"([^"]+)"\s*\.\s*"([^"]+)"|`([^`]+)`\s*\.\s*`([^`]+)`)/gi;
+
+    const seen = new Set<string>();
+    const tasks: Array<Promise<string>> = [];
+    let match;
+
+    while ((match = tablePattern.exec(sql)) !== null) {
+      let schema: string | undefined;
+      let table: string;
+
+      // 处理不同的匹配组
+      if (match[1] && match[2]) {
+        // schema.table
+        schema = match[1];
+        table = match[2];
+      } else if (match[3] && match[4]) {
+        // "schema"."table"
+        schema = match[3];
+        table = match[4];
+      } else if (match[5] && match[6]) {
+        // `schema`.`table`
+        schema = match[5];
+        table = match[6];
+      } else if (match[2]) {
+        // table only
+        table = match[2];
+      } else {
+        continue;
+      }
+
+      // 若未指定 schema，尝试从索引中匹配
+      if (!schema) {
+        const hits = tableIndex.filter((t) => t.table === table);
+        if (hits.length === 1) {
+          schema = hits[0].schema;
+        } else if (hits.length > 1) {
+          const pub = hits.find((x) => x.schema === "public");
+          schema = (pub ?? hits[0]).schema;
+        } else {
+          schema = tab.schema || "public";
+        }
+      }
+
+      const key = `${schema}.${table}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      tasks.push(
+        api
+          .getTableDDL(tab.connID, schema, table, tab.database)
+          .then((r) => `-- Table: ${key}\n${r.ddl}`)
+          .catch(() => `-- 获取 ${key} 的 DDL 失败`)
+      );
+    }
+
+    if (tasks.length === 0) return "";
+    const ddls = await Promise.all(tasks);
+    return ddls.filter(Boolean).join("\n\n");
+  };
+
   const askAI = async () => {
     if (!aiPrompt.trim()) return;
     setAILoading(true);
     try {
       // 优先使用打开弹窗时快照到的选区，而不是再次读取 Monaco（避免 modal 内失焦后 selection 为空）
       const selection = aiSelection?.text ?? "";
-      const tableDDL = await resolveMentions(aiPrompt);
+
+      // 1. 解析 prompt 中的 @ 引用
+      const mentionDDL = await resolveMentions(aiPrompt);
+
+      // 2. 如果有选中的 SQL，自动提取其中的表名并获取 DDL
+      const sqlDDL = selection ? await extractTablesFromSQL(selection) : "";
+
+      // 3. 合并两部分 DDL
+      const combinedDDL = [mentionDDL, sqlDDL].filter(Boolean).join("\n\n");
+
+      // 4. 处理上传的文件
+      let fileContext = "";
+      if (uploadedFiles.length > 0) {
+        fileContext = "\n\n用户上传了以下文件：\n";
+
+        for (const file of uploadedFiles) {
+          fileContext += `\n文件名: ${file.filename}\n`;
+
+          // 如果有数据摘要，直接包含进来
+          if (file.data_summary) {
+            fileContext += file.data_summary + "\n";
+          } else {
+            fileContext += `文件类型: ${file.file_type}\n`;
+          }
+        }
+
+        fileContext += "\n请根据上述文件数据回答用户的问题。";
+      }
+
       // 根据驱动类型设置方言
       let dialect = "postgres";
       if (tab.driver === "mysql") {
@@ -326,10 +440,10 @@ export default function SQLTab({ tab }: Props) {
         dialect = "hive";
       }
       const resp = await api.aiChat({
-        prompt: aiPrompt,
+        prompt: aiPrompt + fileContext,
         dialect,
         selection,
-        table_ddl: tableDDL || undefined,
+        table_ddl: combinedDDL || undefined,
       });
       setAIResp({ sql: resp.sql, explanation: resp.explanation });
     } catch (e: any) {
@@ -352,6 +466,50 @@ export default function SQLTab({ tab }: Props) {
     ]);
     setSQL(ed.getValue());
     setAIOpen(false);
+  };
+
+  // 文件上传处理
+  const handleFileUpload = async (file: File) => {
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const resp = await api.uploadFile(formData);
+      setUploadedFiles((prev) => [...prev, resp]);
+      message.success(`文件 ${file.name} 上传成功`);
+      return false; // 阻止默认上传行为
+    } catch (e: any) {
+      message.error(e?.response?.data?.error ?? "文件上传失败");
+      return false;
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // 删除已上传的文件
+  const handleFileRemove = async (fileId: string) => {
+    try {
+      await api.deleteUploadedFile(fileId);
+      setUploadedFiles((prev) => prev.filter((f) => f.file_id !== fileId));
+      message.success("文件已删除");
+    } catch (e: any) {
+      message.error(e?.response?.data?.error ?? "删除失败");
+    }
+  };
+
+  // 获取文件图标
+  const getFileIcon = (fileType: string) => {
+    if ([".jpg", ".jpeg", ".png", ".gif", ".bmp"].includes(fileType)) {
+      return <FileImageOutlined style={{ fontSize: 16, color: "#52c41a" }} />;
+    }
+    if ([".xlsx", ".xls"].includes(fileType)) {
+      return <FileExcelOutlined style={{ fontSize: 16, color: "#1890ff" }} />;
+    }
+    if ([".csv", ".txt"].includes(fileType)) {
+      return <FileTextOutlined style={{ fontSize: 16, color: "#faad14" }} />;
+    }
+    return <FileTextOutlined style={{ fontSize: 16 }} />;
   };
 
   const openSave = () => {
@@ -517,6 +675,76 @@ export default function SQLTab({ tab }: Props) {
                 });
               }}
             />
+
+            {/* 文件上传区域 */}
+            {uploadedFiles.length > 0 && (
+              <div
+                style={{
+                  marginBottom: 12,
+                  border: "1px solid #d9e2ec",
+                  background: "#f5f8ff",
+                  borderRadius: 6,
+                  padding: "8px 10px",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                  <Tag color="cyan" style={{ margin: 0 }}>
+                    已上传文件
+                  </Tag>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    （{uploadedFiles.length} 个文件）
+                  </Typography.Text>
+                </div>
+                <Space direction="vertical" style={{ width: "100%" }} size={4}>
+                  {uploadedFiles.map((file) => (
+                    <div
+                      key={file.file_id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: "4px 8px",
+                        background: "#fff",
+                        borderRadius: 4,
+                        border: "1px solid #e8e8e8",
+                      }}
+                    >
+                      {getFileIcon(file.file_type)}
+                      <Typography.Text style={{ flex: 1, fontSize: 12 }}>
+                        {file.filename}
+                      </Typography.Text>
+                      <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                        {(file.size / 1024).toFixed(1)} KB
+                      </Typography.Text>
+                      <Button
+                        type="text"
+                        size="small"
+                        danger
+                        icon={<DeleteOutlined />}
+                        onClick={() => handleFileRemove(file.file_id)}
+                      />
+                    </div>
+                  ))}
+                </Space>
+              </div>
+            )}
+
+            <Upload
+              beforeUpload={handleFileUpload}
+              showUploadList={false}
+              accept=".jpg,.jpeg,.png,.gif,.bmp,.xlsx,.xls,.csv,.txt"
+              disabled={uploading}
+            >
+              <Button
+                icon={<PaperClipOutlined />}
+                loading={uploading}
+                size="small"
+                style={{ marginBottom: 12 }}
+              >
+                上传文件（图片/Excel/CSV）
+              </Button>
+            </Upload>
+
             <Mentions
               autoFocus
               rows={6}
