@@ -120,10 +120,10 @@ func TestRegister_PanicsOnDuplicate(t *testing.T) {
 	})
 }
 
-// TestBuiltinDriversRegistered 锁定 init() 注册了 postgres 与 mysql。
+// TestBuiltinDriversRegistered 锁定 init() 注册了 postgres、mysql 与 hive。
 // 这是 PR #3（移除 meta.go 中 switch）的安全网。
 func TestBuiltinDriversRegistered(t *testing.T) {
-	for _, name := range []string{"postgres", "mysql"} {
+	for _, name := range []string{"postgres", "mysql", "hive"} {
 		if _, ok := registry[name]; !ok {
 			t.Errorf("expected built-in driver %q to be registered", name)
 		}
@@ -132,8 +132,8 @@ func TestBuiltinDriversRegistered(t *testing.T) {
 
 func TestListDrivers_BuiltinsAndSorted(t *testing.T) {
 	got := ListDrivers()
-	if len(got) < 2 {
-		t.Fatalf("ListDrivers returned %d entries, want >=2", len(got))
+	if len(got) < 3 {
+		t.Fatalf("ListDrivers returned %d entries, want >=3", len(got))
 	}
 
 	// Names must be sorted ascending — frontends rely on stable order.
@@ -161,6 +161,11 @@ func TestListDrivers_BuiltinsAndSorted(t *testing.T) {
 		t.Fatalf("mysql missing from ListDrivers")
 	} else if my.DefaultPort != 3306 {
 		t.Errorf("mysql DefaultPort = %d, want 3306", my.DefaultPort)
+	}
+	if hv, ok := byName["hive"]; !ok {
+		t.Fatalf("hive missing from ListDrivers")
+	} else if hv.DefaultPort != 10000 {
+		t.Errorf("hive DefaultPort = %d, want 10000", hv.DefaultPort)
 	}
 }
 

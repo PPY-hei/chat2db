@@ -161,10 +161,16 @@ function buildWhereClause(cond: FilterCond, colMeta: ColumnInfo | undefined, quo
 export default function TableDataTab({ tab, onOpenSQL }: Props) {
   const { message } = App.useApp();
   const isMySQL = tab.driver === "mysql";
-  // SQL 标识符引用：PG 用双引号，MySQL 用反引号
-  const q = (name: string) => (isMySQL ? `\`${name}\`` : `"${name}"`);
+  const isHive = tab.driver === "hive";
+  // SQL 标识符引用：PG 用双引号，MySQL 用反引号，Hive 不加引号
+  const q = (name: string) => {
+    if (isHive) return name;
+    return isMySQL ? `\`${name}\`` : `"${name}"`;
+  };
   // 完整表名引用
-  const fullTable = isMySQL
+  const fullTable = isHive
+    ? (tab.schema ? `${tab.schema}.${tab.table}` : tab.table)
+    : isMySQL
     ? (tab.database ? `\`${tab.database}\`.\`${tab.table}\`` : `\`${tab.table}\``)
     : `"${tab.schema}"."${tab.table}"`;
 
@@ -203,7 +209,8 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
     if (where.length > 0) parts.push("WHERE " + where.join(" AND "));
     if (sortColumn && sortDir) {
       parts.push(`ORDER BY ${q(sortColumn)} ${sortDir === "asc" ? "ASC" : "DESC"}`);
-    } else if (!isMySQL) {
+    } else if (!isMySQL && !isHive) {
+      // 只有 PostgreSQL 支持 ctid
       parts.push("ORDER BY ctid");
     }
     if (withLimit) {
@@ -224,9 +231,11 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
       const suffix = buildSuffix(filtersToUse, true, nextPage, nextPageSize);
       const sql = `SELECT * FROM ${fullTable} ${suffix}`;
       let res: ExecuteResponse;
-      if (isMySQL) {
+      if (isMySQL || isHive) {
+        // MySQL 和 Hive 直接执行
         res = await api.execute(tab.connID, sql, tab.database);
       } else {
+        // PostgreSQL 尝试使用 ctid，失败则回退
         const fallback = sql.replace(/ORDER BY ctid/, "");
         try {
           res = await api.execute(tab.connID, sql, tab.database);
@@ -561,15 +570,18 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
       if (whereParts.length > 0) parts.push("WHERE " + whereParts.join(" AND "));
       if (nextCol && nextDir) {
         parts.push(`ORDER BY ${q(nextCol)} ${nextDir === "asc" ? "ASC" : "DESC"}`);
-      } else if (!isMySQL) {
+      } else if (!isMySQL && !isHive) {
+        // 只有 PostgreSQL 支持 ctid
         parts.push("ORDER BY ctid");
       }
       parts.push(`LIMIT ${pageSize} OFFSET 0`);
       const sql = `SELECT * FROM ${fullTable} ${parts.join(" ")}`;
       let res: ExecuteResponse;
-      if (isMySQL) {
+      if (isMySQL || isHive) {
+        // MySQL 和 Hive 直接执行
         res = await api.execute(tab.connID, sql, tab.database);
       } else {
+        // PostgreSQL 尝试使用 ctid，失败则回退
         const fallback = sql.replace(/ORDER BY ctid/, "");
         try {
           res = await api.execute(tab.connID, sql, tab.database);

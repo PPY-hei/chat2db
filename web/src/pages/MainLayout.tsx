@@ -259,12 +259,24 @@ export default function MainLayout() {
       if (!g || !c) return <span>{node.title}</span>;
       return (
         <span className="tree-conn-line">
-          <span>
+          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
             <Space size={6}>
               <span>{c.name}</span>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {c.host}:{c.port}/{c.database}
-              </Typography.Text>
+              <Tooltip title={`${c.host}:${c.port}/${c.database}`}>
+                <Typography.Text
+                  type="secondary"
+                  style={{
+                    fontSize: 12,
+                    maxWidth: '200px',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    display: 'inline-block'
+                  }}
+                >
+                  {c.host}:{c.port}/{c.database}
+                </Typography.Text>
+              </Tooltip>
             </Space>
           </span>
           <Space size={4}>

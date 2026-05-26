@@ -318,9 +318,16 @@ export default function SQLTab({ tab }: Props) {
       // 优先使用打开弹窗时快照到的选区，而不是再次读取 Monaco（避免 modal 内失焦后 selection 为空）
       const selection = aiSelection?.text ?? "";
       const tableDDL = await resolveMentions(aiPrompt);
+      // 根据驱动类型设置方言
+      let dialect = "postgres";
+      if (tab.driver === "mysql") {
+        dialect = "mysql";
+      } else if (tab.driver === "hive") {
+        dialect = "hive";
+      }
       const resp = await api.aiChat({
         prompt: aiPrompt,
-        dialect: tab.driver === "mysql" ? "mysql" : "postgres",
+        dialect,
         selection,
         table_ddl: tableDDL || undefined,
       });
@@ -490,7 +497,7 @@ export default function SQLTab({ tab }: Props) {
         {!aiResp ? (
           <>
             <Typography.Paragraph type="secondary">
-              输入 <span className="kbd">@</span> 可引用当前连接里的表，提交时会自动把该表的 DDL 一并发给模型。当前方言：{tab.driver === "mysql" ? "mysql" : "postgres"}。
+              输入 <span className="kbd">@</span> 可引用当前连接里的表，提交时会自动把该表的 DDL 一并发给模型。当前方言：{tab.driver === "hive" ? "hive" : tab.driver === "mysql" ? "mysql" : "postgres"}。
               {indexLoading && <span style={{ marginLeft: 8, color: "#1677ff" }}>表索引加载中…</span>}
             </Typography.Paragraph>
             <SelectionPreview

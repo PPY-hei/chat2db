@@ -139,11 +139,12 @@ func Exec(ctx context.Context, c *model.Connection, sql string, args ...any) (*Q
 
 // InvalidatePool should be called after a connection is updated or deleted.
 //
-// 目前仍广播到所有已注册驱动（pg + mysql + ssh 隧道），而不是只调一个驱动，
+// 目前仍广播到所有已注册驱动（pg + mysql + hive + ssh 隧道），而不是只调一个驱动，
 // 因为调用方通常只有 connID 而没有 Driver 名；广播是幂等的、代价极低。
 func InvalidatePool(connID uint) {
 	pgInvalidatePool(connID)
 	mysqlInvalidatePool(connID)
+	hiveInvalidatePool(connID)
 	invalidateSSHTunnel(connID)
 }
 
