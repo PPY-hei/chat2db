@@ -34,6 +34,7 @@ import type {
   TaskStatus,
 } from "../types";
 import TaskCreateModal from "./TaskCreateModal";
+import TaskSyncModal from "./TaskSyncModal";
 
 void ({} as Connection); // 占位：保留 import 以便后续扩展（创建表单内部用到）
 
@@ -63,6 +64,8 @@ const STATUS_LABEL: Record<TaskStatus, string> = {
 const KIND_LABEL: Record<TaskKind, string> = {
   export: "导出",
   import: "导入",
+  schema_sync: "表结构同步",
+  data_sync: "表数据同步",
 };
 
 const SCOPE_LABEL: Record<TaskScope, string> = {
@@ -92,6 +95,7 @@ export default function TaskListModal({ open, groups, onClose }: Props) {
   const [data, setData] = useState<TaskPage | null>(null);
   const [loading, setLoading] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [syncOpen, setSyncOpen] = useState(false);
 
   const visibleGroupIDs = data?.visible_group_ids ?? [];
   const groupOptions = useMemo(
@@ -209,6 +213,17 @@ export default function TaskListModal({ open, groups, onClose }: Props) {
         title: "目标",
         width: 280,
         render: (_: any, row: Task) => {
+          // 同步任务显示源 → 目标
+          if (row.kind === "schema_sync" || row.kind === "data_sync") {
+            const src = `${row.target_database}.${row.target_schema}.${row.target_table}`;
+            const dest = `${row.dest_database}.${row.dest_schema}.${row.dest_table}`;
+            return (
+              <span style={{ fontSize: 12 }}>
+                {src} → {dest}
+              </span>
+            );
+          }
+          // 导出任务显示原有逻辑
           if (row.scope === "connection") return <Typography.Text type="secondary">全部数据库</Typography.Text>;
           if (row.scope === "database")
             return <span>{row.target_database}</span>;
@@ -404,6 +419,9 @@ export default function TaskListModal({ open, groups, onClose }: Props) {
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
             新建导出
           </Button>
+          <Button type="default" icon={<PlusOutlined />} onClick={() => setSyncOpen(true)}>
+            新建同步
+          </Button>
         </Space>
 
         <Table<Task>
@@ -434,6 +452,16 @@ export default function TaskListModal({ open, groups, onClose }: Props) {
         onClose={() => setCreateOpen(false)}
         onCreated={() => {
           setCreateOpen(false);
+          reload();
+        }}
+      />
+
+      <TaskSyncModal
+        open={syncOpen}
+        groups={groups}
+        onClose={() => setSyncOpen(false)}
+        onCreated={() => {
+          setSyncOpen(false);
           reload();
         }}
       />

@@ -21,11 +21,15 @@ import (
 type createTaskRequest struct {
 	GroupID        uint            `json:"group_id"`
 	ConnID         uint            `json:"conn_id"`
+	TargetConnID   uint            `json:"target_conn_id"`   // 目标连接（仅同步任务使用）
 	Kind           model.TaskKind  `json:"kind"`
 	Scope          model.TaskScope `json:"scope"`
 	TargetDatabase string          `json:"target_database"`
 	TargetSchema   string          `json:"target_schema"`
 	TargetTable    string          `json:"target_table"`
+	DestDatabase   string          `json:"dest_database"` // 目标数据库（仅同步任务使用）
+	DestSchema     string          `json:"dest_schema"`   // 目标 schema（仅同步任务使用）
+	DestTable      string          `json:"dest_table"`    // 目标表（仅同步任务使用）
 }
 
 // CreateTask 新建任务（创建者需要在目标组中至少为 editor）。
@@ -39,11 +43,15 @@ func CreateTask(c *gin.Context) {
 	t, err := service.CreateTask(uid, service.CreateTaskParams{
 		GroupID:        req.GroupID,
 		ConnID:         req.ConnID,
+		TargetConnID:   req.TargetConnID,
 		Kind:           req.Kind,
 		Scope:          req.Scope,
 		TargetDatabase: strings.TrimSpace(req.TargetDatabase),
 		TargetSchema:   strings.TrimSpace(req.TargetSchema),
 		TargetTable:    strings.TrimSpace(req.TargetTable),
+		DestDatabase:   strings.TrimSpace(req.DestDatabase),
+		DestSchema:     strings.TrimSpace(req.DestSchema),
+		DestTable:      strings.TrimSpace(req.DestTable),
 	})
 	if err != nil {
 		badRequest(c, err)

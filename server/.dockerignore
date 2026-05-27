@@ -1,0 +1,10 @@
+.env
+.env.*
+bin/
+data/
+docs/
+*.test
+*.out
+coverage.out
+Dockerfile
+.dockerignore

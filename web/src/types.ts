@@ -181,9 +181,9 @@ export interface AuditLogPage {
   visible_group_ids: number[];
 }
 
-// ========== 异步任务（导入 / 导出） ==========
+// ========== 异步任务（导入 / 导出 / 同步） ==========
 
-export type TaskKind = "export" | "import";
+export type TaskKind = "export" | "import" | "schema_sync" | "data_sync";
 export type TaskScope = "connection" | "database" | "table";
 export type TaskStatus =
   | "pending"
@@ -196,11 +196,15 @@ export interface Task {
   id: number;
   group_id: number;
   conn_id: number;
+  target_conn_id: number; // 目标连接（仅同步任务使用）
   kind: TaskKind;
   scope: TaskScope;
   target_database: string;
   target_schema: string;
   target_table: string;
+  dest_database: string; // 目标数据库（仅同步任务使用）
+  dest_schema: string; // 目标 schema（仅同步任务使用）
+  dest_table: string; // 目标表（仅同步任务使用）
   status: TaskStatus;
   progress: number;
   processed_rows: number;
@@ -243,9 +247,13 @@ export interface TaskPage {
 export interface CreateTaskRequest {
   group_id: number;
   conn_id: number;
+  target_conn_id?: number; // 目标连接（仅同步任务使用）
   kind: TaskKind;
   scope: TaskScope;
   target_database?: string;
   target_schema?: string;
   target_table?: string;
+  dest_database?: string; // 目标数据库（仅同步任务使用）
+  dest_schema?: string; // 目标 schema（仅同步任务使用）
+  dest_table?: string; // 目标表（仅同步任务使用）
 }

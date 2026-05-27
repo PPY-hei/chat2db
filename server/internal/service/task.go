@@ -43,11 +43,15 @@ func MyGroupIDs(userID uint) ([]uint, error) {
 type CreateTaskParams struct {
 	GroupID        uint
 	ConnID         uint
+	TargetConnID   uint   // 目标连接（仅同步任务使用）
 	Kind           model.TaskKind
 	Scope          model.TaskScope
 	TargetDatabase string
 	TargetSchema   string
 	TargetTable    string
+	DestDatabase   string // 目标数据库（仅同步任务使用）
+	DestSchema     string // 目标 schema（仅同步任务使用）
+	DestTable      string // 目标表（仅同步任务使用）
 }
 
 // CreateTask 校验权限 + 入库 + 入队。返回已分配 ID 的 Task。
@@ -72,15 +76,38 @@ func CreateTask(actorID uint, p CreateTaskParams) (*model.Task, error) {
 		return nil, err
 	}
 
+	// 对于同步任务，验证目标连接
+	if p.Kind == model.TaskKindDataSync || p.Kind == model.TaskKindSchemaSync {
+		if p.TargetConnID == 0 {
+			return nil, errors.New("sync tasks require target_conn_id")
+		}
+		targetConn, _, err := GetConnection(actorID, p.TargetConnID)
+		if err != nil {
+			return nil, err
+		}
+		if targetConn.GroupID != p.GroupID {
+			return nil, errors.New("target connection does not belong to this group")
+		}
+	}
+
 	// 范围参数完整性校验
 	switch p.Scope {
 	case model.TaskScopeTable:
 		if p.TargetDatabase == "" || p.TargetTable == "" {
 			return nil, errors.New("scope=table requires target_database and target_table")
 		}
+		// 同步任务需要目标表信息
+		if (p.Kind == model.TaskKindDataSync || p.Kind == model.TaskKindSchemaSync) &&
+			(p.DestDatabase == "" || p.DestTable == "") {
+			return nil, errors.New("sync tasks with scope=table require dest_database and dest_table")
+		}
 	case model.TaskScopeDatabase:
 		if p.TargetDatabase == "" {
 			return nil, errors.New("scope=database requires target_database")
+		}
+		// 同步任务需要目标数据库信息
+		if (p.Kind == model.TaskKindDataSync || p.Kind == model.TaskKindSchemaSync) && p.DestDatabase == "" {
+			return nil, errors.New("sync tasks with scope=database require dest_database")
 		}
 	}
 
@@ -93,11 +120,15 @@ func CreateTask(actorID uint, p CreateTaskParams) (*model.Task, error) {
 	t := &model.Task{
 		GroupID:        p.GroupID,
 		ConnID:         p.ConnID,
+		TargetConnID:   p.TargetConnID,
 		Kind:           p.Kind,
 		Scope:          p.Scope,
 		TargetDatabase: p.TargetDatabase,
 		TargetSchema:   p.TargetSchema,
 		TargetTable:    p.TargetTable,
+		DestDatabase:   p.DestDatabase,
+		DestSchema:     p.DestSchema,
+		DestTable:      p.DestTable,
 		Status:         model.TaskStatusPending,
 		CreatedByID:    actorID,
 		CreatorName:    creatorName,

@@ -143,6 +143,10 @@ func processTask(id uint) {
 		runErr = runExportTask(ctx, t)
 	case model.TaskKindImport:
 		runErr = errImportNotImplemented
+	case model.TaskKindDataSync:
+		runErr = runDataSyncTask(ctx, t)
+	case model.TaskKindSchemaSync:
+		runErr = runSchemaSyncTask(ctx, t)
 	default:
 		runErr = errUnknownKind
 	}

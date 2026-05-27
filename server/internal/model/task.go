@@ -2,17 +2,18 @@ package model
 
 import "time"
 
-// TaskKind 任务种类：导入 / 导出。
-// 当前实现版本仅支持 export；import 预留枚举值以便后续扩展。
+// TaskKind 任务种类：导入 / 导出 / 表结构同步 / 数据同步。
 type TaskKind string
 
 const (
-	TaskKindExport TaskKind = "export"
-	TaskKindImport TaskKind = "import"
+	TaskKindExport     TaskKind = "export"
+	TaskKindImport     TaskKind = "import"
+	TaskKindSchemaSync TaskKind = "schema_sync"
+	TaskKindDataSync   TaskKind = "data_sync"
 )
 
 func (k TaskKind) Valid() bool {
-	return k == TaskKindExport || k == TaskKindImport
+	return k == TaskKindExport || k == TaskKindImport || k == TaskKindSchemaSync || k == TaskKindDataSync
 }
 
 // TaskScope 任务作用范围：整连接 / 单库 / 单表。
@@ -49,10 +50,12 @@ const (
 //   - 仅追踪元信息和状态/进度；产物（CSV / zip）落地到磁盘，FilePath 记录路径。
 //   - 进度采用 0-100 整数，避免 float 累计误差。
 //   - CancelRequested 是软取消信号：worker 在 row-loop 中周期性检查。
+//   - 对于同步任务（schema_sync/data_sync），ConnID 是源连接，TargetConnID 是目标连接。
 type Task struct {
-	ID      uint   `gorm:"primaryKey" json:"id"`
-	GroupID uint   `gorm:"not null;index" json:"group_id"`
-	ConnID  uint   `gorm:"not null;index" json:"conn_id"`
+	ID           uint   `gorm:"primaryKey" json:"id"`
+	GroupID      uint   `gorm:"not null;index" json:"group_id"`
+	ConnID       uint   `gorm:"not null;index" json:"conn_id"`
+	TargetConnID uint   `gorm:"not null;default:0;index" json:"target_conn_id"` // 目标连接（仅同步任务使用）
 
 	Kind  TaskKind  `gorm:"size:16;not null;index" json:"kind"`
 	Scope TaskScope `gorm:"size:16;not null" json:"scope"`
@@ -62,6 +65,11 @@ type Task struct {
 	TargetDatabase string `gorm:"size:128;not null;default:''" json:"target_database"`
 	TargetSchema   string `gorm:"size:128;not null;default:''" json:"target_schema"`
 	TargetTable    string `gorm:"size:128;not null;default:''" json:"target_table"`
+
+	// 目标连接的数据库/schema/表（仅同步任务使用）
+	DestDatabase string `gorm:"size:128;not null;default:''" json:"dest_database"`
+	DestSchema   string `gorm:"size:128;not null;default:''" json:"dest_schema"`
+	DestTable    string `gorm:"size:128;not null;default:''" json:"dest_table"`
 
 	Status   TaskStatus `gorm:"size:16;not null;index" json:"status"`
 	Progress int        `gorm:"not null;default:0" json:"progress"`
