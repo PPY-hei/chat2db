@@ -17,13 +17,15 @@ interface Props {
  * 联动顺序：
  *   1. 选择任务类型（schema_sync / data_sync）
  *   2. 选择组
- *   3. 选择源连接 → 源数据库 → 源 schema → 源表
- *   4. 选择目标连接 → 目标数据库 → 目标 schema → 目标表
+ *   3. 选择源连接 → 源数据库 → 源 schema → （可选）源表
+ *   4. 选择目标连接 → 目标数据库 → 目标 schema → （可选）目标表
  *
  * 设计取舍：
  *   - 仅 admin/owner/editor 可创建；
- *   - 当前版本仅支持单表同步（scope=table）；
- *   - 数据库和表的下拉数据按需 lazy 调用现有元数据接口。
+ *   - 表名为可选：
+ *       · 选了源表 + 目标表  → scope=table，单表同步；
+ *       · 不选表（仅到 schema）→ scope=schema，遍历源 schema 下所有表，按同名映射到目标 schema；
+ *   - 目标表不存在时（无论 scope=table 或 schema）会按源表结构自动建表后再同步数据。
  */
 export default function TaskSyncModal({ open, groups, onClose, onCreated }: Props) {
   const { message } = App.useApp();
@@ -199,14 +201,22 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
       message.warning("请选择连接组、源连接和目标连接");
       return;
     }
-    if (!srcDatabase || !srcSchema || !srcTable) {
-      message.warning("请选择源数据库、schema 和表");
+    if (!srcDatabase || !srcSchema) {
+      message.warning("请选择源数据库和 schema");
       return;
     }
-    if (!destDatabase || !destSchema || !destTable) {
-      message.warning("请选择目标数据库、schema 和表");
+    if (!destDatabase || !destSchema) {
+      message.warning("请选择目标数据库和 schema");
       return;
     }
+    // 表是可选的，但要么都选要么都不选
+    const hasSrcTable = !!srcTable;
+    const hasDestTable = !!destTable;
+    if (hasSrcTable !== hasDestTable) {
+      message.warning("源表和目标表必须同时选择或同时留空");
+      return;
+    }
+    const scope: TaskScope = hasSrcTable ? "table" : "schema";
 
     setSubmitting(true);
     try {
@@ -215,7 +225,7 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
         conn_id: srcConnID,
         target_conn_id: destConnID,
         kind,
-        scope: "table",
+        scope,
         target_database: srcDatabase,
         target_schema: srcSchema,
         target_table: srcTable,
@@ -316,14 +326,15 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
               showSearch
             />
           </Form.Item>
-          <Form.Item label="源表" required style={{ flex: 1 }}>
+          <Form.Item label="源表（可选）" style={{ flex: 1 }}>
             <Select
-              placeholder="选择表"
+              placeholder="不选则同步整个 schema"
               value={srcTable}
               disabled={!srcSchema}
               onChange={setSrcTable}
               options={srcTables.map((t) => ({ label: t, value: t }))}
               showSearch
+              allowClear
               popupMatchSelectWidth={false}
               style={{ minWidth: 150, maxWidth: 300 }}
             />
@@ -381,14 +392,15 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
               showSearch
             />
           </Form.Item>
-          <Form.Item label="目标表" required style={{ flex: 1 }}>
+          <Form.Item label="目标表（可选）" style={{ flex: 1 }}>
             <Select
-              placeholder="选择表"
+              placeholder="不选则按同名映射到目标 schema"
               value={destTable}
               disabled={!destSchema}
               onChange={setDestTable}
               options={destTables.map((t) => ({ label: t, value: t }))}
               showSearch
+              allowClear
               popupMatchSelectWidth={false}
               style={{ minWidth: 150, maxWidth: 300 }}
             />
@@ -397,8 +409,8 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
 
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
           {kind === "schema_sync"
-            ? "表结构同步：对比源表和目标表的结构差异，自动生成并执行 DDL 语句同步字段、索引等。"
-            : "表数据同步：从源表读取所有数据，批量插入到目标表（仅同步匹配的列）。"}
+            ? "表结构同步：对比源表与目标表结构差异，生成并执行 DDL 同步字段、索引等。不选表则遍历源 schema 下所有表，按同名映射到目标 schema；目标表不存在会按源表结构自动建表。"
+            : "表数据同步：从源表读取所有数据，批量插入到目标表（仅同步同名列）。不选表则遍历源 schema 下所有表，按同名映射到目标 schema；目标表不存在会按源表结构先建表再同步数据。"}
         </Typography.Paragraph>
       </Form>
     </Modal>

@@ -13,6 +13,7 @@ import {
   Tag,
   Tooltip,
   Typography,
+  Upload,
 } from "antd";
 import {
   ReloadOutlined,
@@ -29,6 +30,7 @@ import {
   EyeOutlined,
   DeleteOutlined,
   DownloadOutlined,
+  UploadOutlined,
 } from "@ant-design/icons";
 import { api } from "../api";
 import type { ColumnInfo, ExecuteResponse } from "../types";
@@ -120,6 +122,67 @@ function literalFor(value: string, dt: string | undefined, mysql?: boolean): str
   }
   if (isNumericLike(dt) && /^-?\d+(\.\d+)?$/.test(v)) return v;
   return sqlQuote(v, mysql);
+}
+
+function sqlLiteralFromCell(value: any, dt: string | undefined, mysql?: boolean): string {
+  if (value === null || value === undefined) return "NULL";
+  if (value instanceof Date) return sqlQuote(value.toISOString(), mysql);
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "NULL";
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+  if (typeof value === "object") return sqlQuote(JSON.stringify(value), mysql);
+
+  const raw = String(value);
+  const trimmed = raw.trim();
+  if (trimmed === "") return sqlQuote("", mysql);
+  if (isBoolLike(dt)) {
+    const lv = trimmed.toLowerCase();
+    if (lv === "true" || lv === "t" || lv === "1") return "TRUE";
+    if (lv === "false" || lv === "f" || lv === "0") return "FALSE";
+  }
+  if (isNumericLike(dt) && /^-?\d+(\.\d+)?$/.test(trimmed)) return trimmed;
+  return sqlQuote(raw, mysql);
+}
+
+function parseCSV(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    if (inQuotes) {
+      if (ch === '"' && next === '"') {
+        field += '"';
+        i++;
+      } else if (ch === '"') {
+        inQuotes = false;
+      } else {
+        field += ch;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ",") {
+      row.push(field);
+      field = "";
+    } else if (ch === "\n") {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else if (ch !== "\r") {
+      field += ch;
+    }
+  }
+
+  row.push(field);
+  if (row.length > 1 || row[0] !== "" || text.endsWith(",")) rows.push(row);
+  return rows;
 }
 
 // 将一个筛选条件转成 SQL 片段
@@ -352,6 +415,7 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deletePreviewOpen, setDeletePreviewOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   // 切换页/筛选/排序后，旧选择不再有效，避免误删/误导出
   useEffect(() => {
@@ -629,6 +693,15 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
     return String(v);
   };
 
+  const copyText = async (text: string, successText: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      message.success(successText);
+    } catch {
+      message.error("复制失败");
+    }
+  };
+
   // CSV 字段转义：含逗号/引号/换行的字段需要双引号包裹并双写引号
   const csvEscape = (s: string): string => {
     if (s.includes(",") || s.includes("\n") || s.includes('"')) {
@@ -670,6 +743,148 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
     const stem = `${tab.schema || "data"}.${tab.table || "rows"}`;
     triggerDownload(JSON.stringify(objs, null, 2), `${stem}.json`, "application/json");
     message.success(`已导出 ${rows.length} 行 JSON`);
+  };
+
+  const selectedRowsAsObjects = () => {
+    const { columns: cols, rows } = getSelectedRows();
+    return rows.map((r) => {
+      const o: Record<string, any> = {};
+      cols.forEach((name, i) => {
+        o[name] = r[i] ?? null;
+      });
+      return o;
+    });
+  };
+
+  const selectedRowsAsTSV = () => {
+    const { columns: cols, rows } = getSelectedRows();
+    const escapeTSV = (s: string) => s.replace(/\t/g, "\\t").replace(/\r?\n/g, "\\n");
+    return [cols.join("\t"), ...rows.map((r) => r.map((c) => escapeTSV(cellToString(c))).join("\t"))].join("\n");
+  };
+
+  const generateInsertSQL = (): string[] => {
+    const { columns: cols, rows } = getSelectedRows();
+    if (cols.length === 0 || rows.length === 0) return [];
+    const colList = cols.map(q).join(", ");
+    return rows.map((row) => {
+      const values = cols.map((name, i) => {
+        const meta = columns.find((c) => c.name === name);
+        return sqlLiteralFromCell(row[i], meta?.data_type, isMySQL);
+      });
+      return `INSERT INTO ${fullTable} (${colList}) VALUES (${values.join(", ")});`;
+    });
+  };
+
+  const copySelectedAsInsertSQL = () => {
+    const stmts = generateInsertSQL();
+    if (stmts.length === 0) {
+      message.warning("没有选中行");
+      return;
+    }
+    copyText(stmts.join("\n"), `已复制 ${stmts.length} 行 INSERT SQL`);
+  };
+
+  const copySelectedAsJSON = () => {
+    const objs = selectedRowsAsObjects();
+    if (objs.length === 0) {
+      message.warning("没有选中行");
+      return;
+    }
+    copyText(JSON.stringify(objs, null, 2), `已复制 ${objs.length} 行 JSON`);
+  };
+
+  const copySelectedAsTSV = () => {
+    const { rows } = getSelectedRows();
+    if (rows.length === 0) {
+      message.warning("没有选中行");
+      return;
+    }
+    copyText(selectedRowsAsTSV(), `已复制 ${rows.length} 行 TSV`);
+  };
+
+  const csvValueToSQL = (value: string, dt: string | undefined): string => {
+    if (value === "") return "NULL";
+    return sqlLiteralFromCell(value, dt, isMySQL);
+  };
+
+  const buildCSVImportSQL = (text: string): { sql: string; rowCount: number } => {
+    const parsed = parseCSV(text);
+    if (parsed.length < 2) throw new Error("CSV 文件至少需要表头和一行数据");
+
+    const headers = parsed[0].map((h) => h.trim().replace(/^\uFEFF/, ""));
+    const tableCols = new Map(columns.map((c) => [c.name, c]));
+    const importCols = headers
+      .map((name, index) => ({ name, index, meta: tableCols.get(name) }))
+      .filter((c): c is { name: string; index: number; meta: ColumnInfo } => !!c.name && !!c.meta);
+
+    if (importCols.length === 0) throw new Error("CSV 表头没有匹配当前表字段");
+
+    const dataRows = parsed.slice(1).filter((r) => r.some((cell) => cell !== ""));
+    if (dataRows.length === 0) throw new Error("CSV 文件没有可导入的数据行");
+
+    const colList = importCols.map((c) => q(c.name)).join(", ");
+    const stmts: string[] = [];
+    const chunkSize = 200;
+    for (let start = 0; start < dataRows.length; start += chunkSize) {
+      const chunk = dataRows.slice(start, start + chunkSize);
+      const values = chunk.map((row) => {
+        const rowValues = importCols.map((c) => csvValueToSQL(row[c.index] ?? "", c.meta.data_type));
+        return `(${rowValues.join(", ")})`;
+      });
+      stmts.push(`INSERT INTO ${fullTable} (${colList}) VALUES\n${values.join(",\n")};`);
+    }
+
+    return { sql: stmts.join("\n"), rowCount: dataRows.length };
+  };
+
+  const importDataFile = async (file: File) => {
+    if (!canEdit) {
+      message.warning("当前角色无写权限");
+      return;
+    }
+    if (columns.length === 0) {
+      message.warning("表字段尚未加载完成");
+      return;
+    }
+
+    const lowerName = file.name.toLowerCase();
+    const isCSV = lowerName.endsWith(".csv");
+    const isSQL = lowerName.endsWith(".sql");
+    if (!isCSV && !isSQL) {
+      message.warning("只支持 CSV 或 SQL 文件");
+      return;
+    }
+
+    setImporting(true);
+    try {
+      const text = await file.text();
+      if (!text.trim()) throw new Error("文件内容为空");
+
+      let sql = text;
+      let importedRows: number | null = null;
+      if (isCSV) {
+        const built = buildCSVImportSQL(text);
+        sql = built.sql;
+        importedRows = built.rowCount;
+      }
+
+      const res = await api.execute(tab.connID, sql, tab.database);
+      if (res.error) {
+        message.error("导入失败：" + res.error);
+        return;
+      }
+      message.success(
+        isCSV && importedRows !== null
+          ? `已导入 ${importedRows} 行`
+          : `已执行 ${res.results?.length ?? 0} 条 SQL`
+      );
+      await fetchPage(page, pageSize, appliedFilters);
+      await fetchTotal(appliedFilters);
+    } catch (e: any) {
+      message.error(e?.message ?? "导入失败");
+    } finally {
+      setImporting(false);
+    }
   };
 
   // 生成批量 DELETE SQL（每行一条，按 PK 精确定位；无 PK 时返回空数组）
@@ -1005,11 +1220,44 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
               查看 DDL
             </Button>
           </Tooltip>
+          {canEdit && (
+            <Upload
+              accept=".csv,.sql"
+              showUploadList={false}
+              beforeUpload={(file) => {
+                importDataFile(file);
+                return false;
+              }}
+              disabled={importing}
+            >
+              <Button size="small" icon={<UploadOutlined />} loading={importing}>
+                导入
+              </Button>
+            </Upload>
+          )}
           {selectedRowKeys.length > 0 && (
             <>
               <Tag color="blue" style={{ marginLeft: 4 }}>
                 已选 {selectedRowKeys.length} 行
               </Tag>
+              <Dropdown
+                menu={{
+                  items: [
+                    { key: "insert-sql", label: "复制为 INSERT SQL" },
+                    { key: "json", label: "复制为 JSON" },
+                    { key: "tsv", label: "复制为 TSV" },
+                  ],
+                  onClick: ({ key }) => {
+                    if (key === "insert-sql") copySelectedAsInsertSQL();
+                    else if (key === "json") copySelectedAsJSON();
+                    else if (key === "tsv") copySelectedAsTSV();
+                  },
+                }}
+              >
+                <Button size="small" icon={<CopyOutlined />}>
+                  复制
+                </Button>
+              </Dropdown>
               <Dropdown
                 menu={{
                   items: exportMenuItems,

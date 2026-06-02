@@ -184,7 +184,7 @@ export interface AuditLogPage {
 // ========== 异步任务（导入 / 导出 / 同步） ==========
 
 export type TaskKind = "export" | "import" | "schema_sync" | "data_sync";
-export type TaskScope = "connection" | "database" | "table";
+export type TaskScope = "connection" | "database" | "schema" | "table";
 export type TaskStatus =
   | "pending"
   | "running"

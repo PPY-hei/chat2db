@@ -270,6 +270,10 @@ func pgExec(ctx context.Context, c *model.Connection, sql string, args ...any) (
 			return nil, err
 		}
 	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	tag := rows.CommandTag()
 	out.Tag = tag.String()
 	out.RowsAffected = tag.RowsAffected()

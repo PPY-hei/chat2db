@@ -17,6 +17,7 @@ import (
 	"github.com/chy/chat2db/server/internal/db"
 	"github.com/chy/chat2db/server/internal/dbexec"
 	"github.com/chy/chat2db/server/internal/model"
+	mysqldriver "github.com/go-sql-driver/mysql"
 )
 
 var (
@@ -416,6 +417,8 @@ var _ = (*sql.DB)(nil)
 
 // runDataSyncTask 执行表数据同步任务。
 // 从源表读取所有数据，批量插入到目标表。
+// scope=table  时仅同步单张表；
+// scope=schema 时遍历源 database+schema 下的所有表，按同名映射到目标 schema，目标表不存在则先建表。
 func runDataSyncTask(ctx context.Context, t *model.Task) error {
 	srcConn, err := loadConnection(t.ConnID)
 	if err != nil {
@@ -426,80 +429,188 @@ func runDataSyncTask(ctx context.Context, t *model.Task) error {
 		return fmt.Errorf("load destination connection: %w", err)
 	}
 
-	// 验证驱动支持
+	if err := assertSyncDriversSupported(srcConn, destConn); err != nil {
+		return err
+	}
+
+	pairs, err := resolveSyncTablePairs(ctx, srcConn, t)
+	if err != nil {
+		return fmt.Errorf("resolve table pairs: %w", err)
+	}
+	if len(pairs) == 0 {
+		return errors.New("no tables to sync")
+	}
+
+	if err := updateTaskFields(t.ID, map[string]any{
+		"total_tables": len(pairs),
+		"done_tables":  0,
+	}); err != nil {
+		return err
+	}
+
+	var grandTotal int64
+	for i, p := range pairs {
+		if err := checkCancel(ctx, t.ID); err != nil {
+			return err
+		}
+		rows, err := syncOneTableData(ctx, srcConn, destConn, t, p)
+		if err != nil {
+			return fmt.Errorf("sync %s.%s.%s -> %s.%s.%s: %w",
+				p.SrcDatabase, p.SrcSchema, p.SrcTable,
+				p.DestDatabase, p.DestSchema, p.DestTable, err)
+		}
+		grandTotal += rows
+		prog := int(float64(i+1) / float64(len(pairs)) * 100)
+		_ = updateTaskFields(t.ID, map[string]any{
+			"done_tables":    i + 1,
+			"processed_rows": grandTotal,
+			"total_rows":     grandTotal,
+			"progress":       prog,
+		})
+	}
+
+	return updateTaskFields(t.ID, map[string]any{
+		"processed_rows": grandTotal,
+		"total_rows":     grandTotal,
+	})
+}
+
+// syncTablePair 描述一次"源表 → 目标表"的对应关系。
+type syncTablePair struct {
+	SrcDatabase, SrcSchema, SrcTable    string
+	DestDatabase, DestSchema, DestTable string
+}
+
+// resolveSyncTablePairs 根据 task scope 计算源 → 目标的表映射。
+//   - scope=table  ：只产出 1 对，按 task 字段直接映射
+//   - scope=schema ：列出源 database+schema 下所有 table（不含 view），按同名映射到目标 schema
+func resolveSyncTablePairs(ctx context.Context, srcConn *model.Connection, t *model.Task) ([]syncTablePair, error) {
+	switch t.Scope {
+	case model.TaskScopeTable:
+		return []syncTablePair{{
+			SrcDatabase: t.TargetDatabase, SrcSchema: t.TargetSchema, SrcTable: t.TargetTable,
+			DestDatabase: t.DestDatabase, DestSchema: t.DestSchema, DestTable: t.DestTable,
+		}}, nil
+	case model.TaskScopeSchema:
+		c := dbexec.WithDatabase(srcConn, t.TargetDatabase)
+		tables, err := dbexec.ListTables(ctx, c, t.TargetSchema)
+		if err != nil {
+			return nil, err
+		}
+		pairs := make([]syncTablePair, 0, len(tables))
+		for _, tb := range tables {
+			if tb.Kind != "table" {
+				continue
+			}
+			pairs = append(pairs, syncTablePair{
+				SrcDatabase: t.TargetDatabase, SrcSchema: t.TargetSchema, SrcTable: tb.Name,
+				DestDatabase: t.DestDatabase, DestSchema: t.DestSchema, DestTable: tb.Name,
+			})
+		}
+		return pairs, nil
+	default:
+		return nil, fmt.Errorf("unsupported scope for sync task: %s", t.Scope)
+	}
+}
+
+// assertSyncDriversSupported 校验源/目标驱动是否在白名单内。
+func assertSyncDriversSupported(srcConn, destConn *model.Connection) error {
 	if srcConn.Driver != "postgres" && srcConn.Driver != "mysql" {
 		return fmt.Errorf("source %w: %s", errUnsupportedDriver, srcConn.Driver)
 	}
 	if destConn.Driver != "postgres" && destConn.Driver != "mysql" {
 		return fmt.Errorf("destination %w: %s", errUnsupportedDriver, destConn.Driver)
 	}
+	return nil
+}
 
-	// 读取源表结构
-	srcC := dbexec.WithDatabase(srcConn, t.TargetDatabase)
-	srcCols, err := dbexec.ListColumns(ctx, srcC, t.TargetSchema, t.TargetTable)
+// syncOneTableData 同步单张表的数据：
+//   - 读取源/目标列；目标表不存在时先按源表结构建表（含主键 + 索引）
+//   - 按列名取交集做 INSERT
+func syncOneTableData(ctx context.Context, srcConn, destConn *model.Connection, t *model.Task, p syncTablePair) (int64, error) {
+	srcC := dbexec.WithDatabase(srcConn, p.SrcDatabase)
+	srcCols, err := dbexec.ListColumns(ctx, srcC, p.SrcSchema, p.SrcTable)
 	if err != nil {
-		return fmt.Errorf("list source columns: %w", err)
+		return 0, fmt.Errorf("list source columns: %w", err)
 	}
 	if len(srcCols) == 0 {
-		return errors.New("source table has no columns")
+		return 0, errors.New("source table has no columns")
 	}
 
-	// 读取目标表结构
-	destC := dbexec.WithDatabase(destConn, t.DestDatabase)
-	destCols, err := dbexec.ListColumns(ctx, destC, t.DestSchema, t.DestTable)
+	destC := dbexec.WithDatabase(destConn, p.DestDatabase)
+	destCols, err := dbexec.ListColumns(ctx, destC, p.DestSchema, p.DestTable)
 	if err != nil {
-		return fmt.Errorf("list destination columns: %w", err)
-	}
-	if len(destCols) == 0 {
-		return errors.New("destination table has no columns")
-	}
-
-	// 匹配列名（按名称匹配）
-	colMap := make(map[string]bool)
-	for _, dc := range destCols {
-		colMap[dc.Name] = true
-	}
-	var matchedCols []string
-	for _, sc := range srcCols {
-		if colMap[sc.Name] {
-			matchedCols = append(matchedCols, sc.Name)
+		// 目标表不存在 → 按源表结构建表，再继续同步数据
+		if isMissingTableErr(err) {
+			srcIdx, _ := dbexec.ListIndexes(ctx, srcC, p.SrcSchema, p.SrcTable)
+			if cerr := createDestTableFromSrc(ctx, destConn, p, srcCols, srcIdx); cerr != nil {
+				return 0, fmt.Errorf("auto-create dest table: %w", cerr)
+			}
+			destCols, err = dbexec.ListColumns(ctx, destC, p.DestSchema, p.DestTable)
+			if err != nil {
+				return 0, fmt.Errorf("list destination columns after create: %w", err)
+			}
+		} else {
+			return 0, fmt.Errorf("list destination columns: %w", err)
 		}
 	}
-	if len(matchedCols) == 0 {
-		return errors.New("no matching columns between source and destination")
+	if len(destCols) == 0 {
+		return 0, errors.New("destination table has no columns")
 	}
 
-	// 开始同步数据
-	var totalRows int64
+	matched := matchColumnNames(srcCols, destCols)
+	if len(matched) == 0 {
+		return 0, errors.New("no matching columns between source and destination")
+	}
+
 	switch srcConn.Driver {
 	case "postgres":
-		totalRows, err = syncDataFromPG(ctx, srcConn, destConn, t, matchedCols)
+		return syncDataFromPG(ctx, srcConn, destConn, t, p, matched)
 	case "mysql":
-		totalRows, err = syncDataFromMySQL(ctx, srcConn, destConn, t, matchedCols)
+		return syncDataFromMySQL(ctx, srcConn, destConn, t, p, matched)
 	default:
-		return errUnsupportedDriver
+		return 0, errUnsupportedDriver
 	}
+}
 
-	if err != nil {
-		return err
+// matchColumnNames 取源列与目标列的交集，保留源列顺序。
+func matchColumnNames(src, dest []dbexec.ColumnInfo) []string {
+	destSet := make(map[string]struct{}, len(dest))
+	for _, c := range dest {
+		destSet[c.Name] = struct{}{}
 	}
+	out := make([]string, 0, len(src))
+	for _, c := range src {
+		if _, ok := destSet[c.Name]; ok {
+			out = append(out, c.Name)
+		}
+	}
+	return out
+}
 
-	return updateTaskFields(t.ID, map[string]any{
-		"processed_rows": totalRows,
-		"total_rows":     totalRows,
-	})
+// isMissingTableErr 判断错误是否是"目标表/关系不存在"。
+// 不同驱动消息不同，做关键字匹配兜底。
+func isMissingTableErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "does not exist") ||
+		strings.Contains(msg, "doesn't exist") ||
+		strings.Contains(msg, "no such table") ||
+		strings.Contains(msg, "unknown table")
 }
 
 // syncDataFromPG 从 PostgreSQL 源表同步数据到目标表。
-func syncDataFromPG(ctx context.Context, srcConn, destConn *model.Connection, t *model.Task, cols []string) (int64, error) {
-	srcC := dbexec.WithDatabase(srcConn, t.TargetDatabase)
+func syncDataFromPG(ctx context.Context, srcConn, destConn *model.Connection, t *model.Task, p syncTablePair, cols []string) (int64, error) {
+	srcC := dbexec.WithDatabase(srcConn, p.SrcDatabase)
 	pool, err := dbexec.AcquirePGPool(ctx, srcC)
 	if err != nil {
 		return 0, fmt.Errorf("acquire source pool: %w", err)
 	}
 
 	colList := strings.Join(quoteIdentifiers(cols, srcConn.Driver), ", ")
-	q := fmt.Sprintf("SELECT %s FROM %s.%s", colList, quotePGIdent(t.TargetSchema), quotePGIdent(t.TargetTable))
+	q := fmt.Sprintf("SELECT %s FROM %s.%s", colList, quotePGIdent(p.SrcSchema), quotePGIdent(p.SrcTable))
 	rows, err := pool.Query(ctx, q)
 	if err != nil {
 		return 0, fmt.Errorf("query source: %w", err)
@@ -523,23 +634,21 @@ func syncDataFromPG(ctx context.Context, srcConn, destConn *model.Connection, t 
 		batch = append(batch, vals)
 
 		if len(batch) >= batchSize {
-			if err := insertBatch(ctx, destConn, t, cols, batch); err != nil {
+			if err := insertBatch(ctx, destConn, p, cols, batch); err != nil {
 				return totalRows, fmt.Errorf("insert batch: %w", err)
 			}
 			totalRows += int64(len(batch))
 			batch = batch[:0]
 
-			prog := int(float64(totalRows) / float64(totalRows+1) * 50) // 估算进度
 			_ = updateTaskFields(t.ID, map[string]any{
 				"processed_rows": totalRows,
-				"progress":       prog,
 			})
 		}
 	}
 
 	// 插入剩余数据
 	if len(batch) > 0 {
-		if err := insertBatch(ctx, destConn, t, cols, batch); err != nil {
+		if err := insertBatch(ctx, destConn, p, cols, batch); err != nil {
 			return totalRows, fmt.Errorf("insert final batch: %w", err)
 		}
 		totalRows += int64(len(batch))
@@ -549,15 +658,15 @@ func syncDataFromPG(ctx context.Context, srcConn, destConn *model.Connection, t 
 }
 
 // syncDataFromMySQL 从 MySQL 源表同步数据到目标表。
-func syncDataFromMySQL(ctx context.Context, srcConn, destConn *model.Connection, t *model.Task, cols []string) (int64, error) {
-	srcC := dbexec.WithDatabase(srcConn, t.TargetDatabase)
+func syncDataFromMySQL(ctx context.Context, srcConn, destConn *model.Connection, t *model.Task, p syncTablePair, cols []string) (int64, error) {
+	srcC := dbexec.WithDatabase(srcConn, p.SrcDatabase)
 	pool, err := dbexec.AcquireMySQLPool(ctx, srcC)
 	if err != nil {
 		return 0, fmt.Errorf("acquire source pool: %w", err)
 	}
 
 	colList := strings.Join(quoteIdentifiers(cols, srcConn.Driver), ", ")
-	q := fmt.Sprintf("SELECT %s FROM `%s`.`%s`", colList, escapeMyIdent(t.TargetDatabase), escapeMyIdent(t.TargetTable))
+	q := fmt.Sprintf("SELECT %s FROM `%s`.`%s`", colList, escapeMyIdent(p.SrcDatabase), escapeMyIdent(p.SrcTable))
 	rows, err := pool.QueryContext(ctx, q)
 	if err != nil {
 		return 0, fmt.Errorf("query source: %w", err)
@@ -589,22 +698,20 @@ func syncDataFromMySQL(ctx context.Context, srcConn, destConn *model.Connection,
 		batch = append(batch, vals)
 
 		if len(batch) >= batchSize {
-			if err := insertBatch(ctx, destConn, t, cols, batch); err != nil {
+			if err := insertBatch(ctx, destConn, p, cols, batch); err != nil {
 				return totalRows, fmt.Errorf("insert batch: %w", err)
 			}
 			totalRows += int64(len(batch))
 			batch = batch[:0]
 
-			prog := int(float64(totalRows) / float64(totalRows+1) * 50)
 			_ = updateTaskFields(t.ID, map[string]any{
 				"processed_rows": totalRows,
-				"progress":       prog,
 			})
 		}
 	}
 
 	if len(batch) > 0 {
-		if err := insertBatch(ctx, destConn, t, cols, batch); err != nil {
+		if err := insertBatch(ctx, destConn, p, cols, batch); err != nil {
 			return totalRows, fmt.Errorf("insert final batch: %w", err)
 		}
 		totalRows += int64(len(batch))
@@ -614,31 +721,37 @@ func syncDataFromMySQL(ctx context.Context, srcConn, destConn *model.Connection,
 }
 
 // insertBatch 批量插入数据到目标表。
-func insertBatch(ctx context.Context, destConn *model.Connection, t *model.Task, cols []string, batch [][]any) error {
+func insertBatch(ctx context.Context, destConn *model.Connection, p syncTablePair, cols []string, batch [][]any) error {
 	if len(batch) == 0 {
 		return nil
 	}
 
-	destC := dbexec.WithDatabase(destConn, t.DestDatabase)
+	destC := dbexec.WithDatabase(destConn, p.DestDatabase)
 	colList := strings.Join(quoteIdentifiers(cols, destConn.Driver), ", ")
 
 	switch destConn.Driver {
 	case "postgres":
-		return insertBatchPG(ctx, destC, t, colList, batch, len(cols))
+		return insertBatchPG(ctx, destC, p, colList, batch, len(cols))
 	case "mysql":
-		return insertBatchMySQL(ctx, destC, t, colList, batch, len(cols))
+		return insertBatchMySQL(ctx, destC, p, colList, batch, len(cols))
 	default:
 		return errUnsupportedDriver
 	}
 }
 
 // insertBatchPG 批量插入到 PostgreSQL。
-func insertBatchPG(ctx context.Context, destC *model.Connection, t *model.Task, colList string, batch [][]any, colCount int) error {
+func insertBatchPG(ctx context.Context, destC *model.Connection, p syncTablePair, colList string, batch [][]any, colCount int) error {
 	pool, err := dbexec.AcquirePGPool(ctx, destC)
 	if err != nil {
 		return err
 	}
 
+	q, args := buildPGBatchInsert(p, colList, batch, colCount)
+	_, err = pool.Exec(ctx, q, args...)
+	return err
+}
+
+func buildPGBatchInsert(p syncTablePair, colList string, batch [][]any, colCount int) (string, []any) {
 	placeholders := make([]string, len(batch))
 	args := make([]any, 0, len(batch)*colCount)
 	for i, row := range batch {
@@ -650,19 +763,39 @@ func insertBatchPG(ctx context.Context, destC *model.Connection, t *model.Task, 
 		args = append(args, row...)
 	}
 
-	q := fmt.Sprintf("INSERT INTO %s.%s (%s) VALUES %s",
-		quotePGIdent(t.DestSchema), quotePGIdent(t.DestTable), colList, strings.Join(placeholders, ", "))
-	_, err = pool.Exec(ctx, q, args...)
-	return err
+	// 使用 ON CONFLICT DO NOTHING 跳过主键/唯一约束冲突
+	q := fmt.Sprintf("INSERT INTO %s.%s (%s) VALUES %s ON CONFLICT DO NOTHING",
+		quotePGIdent(p.DestSchema), quotePGIdent(p.DestTable), colList, strings.Join(placeholders, ", "))
+	return q, args
 }
 
 // insertBatchMySQL 批量插入到 MySQL。
-func insertBatchMySQL(ctx context.Context, destC *model.Connection, t *model.Task, colList string, batch [][]any, colCount int) error {
+func insertBatchMySQL(ctx context.Context, destC *model.Connection, p syncTablePair, colList string, batch [][]any, colCount int) error {
 	pool, err := dbexec.AcquireMySQLPool(ctx, destC)
 	if err != nil {
 		return err
 	}
 
+	q, args := buildMySQLBatchInsert(p, colList, batch, colCount)
+	if _, err := pool.ExecContext(ctx, q, args...); err == nil {
+		return nil
+	} else if !isMySQLDuplicateKeyErr(err) {
+		return err
+	}
+
+	singleQ := buildMySQLSingleInsert(p, colList, colCount)
+	for _, row := range batch {
+		if _, err := pool.ExecContext(ctx, singleQ, row...); err != nil {
+			if isMySQLDuplicateKeyErr(err) {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func buildMySQLBatchInsert(p syncTablePair, colList string, batch [][]any, colCount int) (string, []any) {
 	placeholders := make([]string, len(batch))
 	args := make([]any, 0, len(batch)*colCount)
 	for i, row := range batch {
@@ -675,9 +808,22 @@ func insertBatchMySQL(ctx context.Context, destC *model.Connection, t *model.Tas
 	}
 
 	q := fmt.Sprintf("INSERT INTO `%s`.`%s` (%s) VALUES %s",
-		escapeMyIdent(t.DestDatabase), escapeMyIdent(t.DestTable), colList, strings.Join(placeholders, ", "))
-	_, err = pool.ExecContext(ctx, q, args...)
-	return err
+		escapeMyIdent(p.DestDatabase), escapeMyIdent(p.DestTable), colList, strings.Join(placeholders, ", "))
+	return q, args
+}
+
+func buildMySQLSingleInsert(p syncTablePair, colList string, colCount int) string {
+	rowPlaceholders := make([]string, colCount)
+	for i := 0; i < colCount; i++ {
+		rowPlaceholders[i] = "?"
+	}
+	return fmt.Sprintf("INSERT INTO `%s`.`%s` (%s) VALUES (%s)",
+		escapeMyIdent(p.DestDatabase), escapeMyIdent(p.DestTable), colList, strings.Join(rowPlaceholders, ", "))
+}
+
+func isMySQLDuplicateKeyErr(err error) bool {
+	var myErr *mysqldriver.MySQLError
+	return errors.As(err, &myErr) && myErr.Number == 1062
 }
 
 // quoteIdentifiers 根据驱动类型引用标识符列表。
@@ -694,7 +840,8 @@ func quoteIdentifiers(names []string, driver string) []string {
 }
 
 // runSchemaSyncTask 执行表结构同步任务。
-// 对比源表和目标表的结构差异，生成并执行 DDL 语句。
+// scope=table  时仅对单表对比 + 同步；
+// scope=schema 时遍历源 database+schema 下的所有表，按同名映射到目标 schema。
 func runSchemaSyncTask(ctx context.Context, t *model.Task) error {
 	srcConn, err := loadConnection(t.ConnID)
 	if err != nil {
@@ -705,123 +852,142 @@ func runSchemaSyncTask(ctx context.Context, t *model.Task) error {
 		return fmt.Errorf("load destination connection: %w", err)
 	}
 
-	// 验证驱动支持
-	if srcConn.Driver != "postgres" && srcConn.Driver != "mysql" {
-		return fmt.Errorf("source %w: %s", errUnsupportedDriver, srcConn.Driver)
-	}
-	if destConn.Driver != "postgres" && destConn.Driver != "mysql" {
-		return fmt.Errorf("destination %w: %s", errUnsupportedDriver, destConn.Driver)
+	if err := assertSyncDriversSupported(srcConn, destConn); err != nil {
+		return err
 	}
 
-	// 读取源表结构
-	srcC := dbexec.WithDatabase(srcConn, t.TargetDatabase)
-	srcCols, err := dbexec.ListColumns(ctx, srcC, t.TargetSchema, t.TargetTable)
+	pairs, err := resolveSyncTablePairs(ctx, srcConn, t)
+	if err != nil {
+		return fmt.Errorf("resolve table pairs: %w", err)
+	}
+	if len(pairs) == 0 {
+		return errors.New("no tables to sync")
+	}
+
+	if err := updateTaskFields(t.ID, map[string]any{
+		"total_tables": len(pairs),
+		"done_tables":  0,
+	}); err != nil {
+		return err
+	}
+
+	for i, p := range pairs {
+		if err := checkCancel(ctx, t.ID); err != nil {
+			return err
+		}
+		if err := syncOneTableSchema(ctx, srcConn, destConn, p); err != nil {
+			return fmt.Errorf("schema sync %s.%s.%s -> %s.%s.%s: %w",
+				p.SrcDatabase, p.SrcSchema, p.SrcTable,
+				p.DestDatabase, p.DestSchema, p.DestTable, err)
+		}
+		prog := int(float64(i+1) / float64(len(pairs)) * 100)
+		_ = updateTaskFields(t.ID, map[string]any{
+			"done_tables": i + 1,
+			"progress":    prog,
+		})
+	}
+
+	return updateTaskFields(t.ID, map[string]any{"progress": 100})
+}
+
+// syncOneTableSchema 对比并同步单张表的结构差异。目标表不存在时直接按源表建表。
+func syncOneTableSchema(ctx context.Context, srcConn, destConn *model.Connection, p syncTablePair) error {
+	srcC := dbexec.WithDatabase(srcConn, p.SrcDatabase)
+	srcCols, err := dbexec.ListColumns(ctx, srcC, p.SrcSchema, p.SrcTable)
 	if err != nil {
 		return fmt.Errorf("list source columns: %w", err)
 	}
-	srcIndexes, err := dbexec.ListIndexes(ctx, srcC, t.TargetSchema, t.TargetTable)
+	srcIndexes, err := dbexec.ListIndexes(ctx, srcC, p.SrcSchema, p.SrcTable)
 	if err != nil {
 		return fmt.Errorf("list source indexes: %w", err)
 	}
 
-	// 读取目标表结构
-	destC := dbexec.WithDatabase(destConn, t.DestDatabase)
-	destCols, err := dbexec.ListColumns(ctx, destC, t.DestSchema, t.DestTable)
+	destC := dbexec.WithDatabase(destConn, p.DestDatabase)
+	destCols, err := dbexec.ListColumns(ctx, destC, p.DestSchema, p.DestTable)
 	if err != nil {
-		// 目标表不存在，创建整个表
-		if strings.Contains(err.Error(), "does not exist") || strings.Contains(err.Error(), "doesn't exist") {
-			return createTable(ctx, destConn, t, srcCols, srcIndexes)
+		if isMissingTableErr(err) {
+			return createDestTableFromSrc(ctx, destConn, p, srcCols, srcIndexes)
 		}
 		return fmt.Errorf("list destination columns: %w", err)
 	}
-	destIndexes, err := dbexec.ListIndexes(ctx, destC, t.DestSchema, t.DestTable)
+	destIndexes, err := dbexec.ListIndexes(ctx, destC, p.DestSchema, p.DestTable)
 	if err != nil {
 		return fmt.Errorf("list destination indexes: %w", err)
 	}
 
-	// 对比并同步结构
-	return syncSchema(ctx, destConn, t, srcCols, srcIndexes, destCols, destIndexes)
+	return diffAndApplySchema(ctx, destConn, p, srcCols, srcIndexes, destCols, destIndexes)
 }
 
-// createTable 创建目标表（当目标表不存在时）。
-func createTable(ctx context.Context, destConn *model.Connection, t *model.Task, cols []dbexec.ColumnInfo, indexes []dbexec.IndexInfo) error {
+// createDestTableFromSrc 按源表结构在目标库创建同名表（含主键 + 普通索引）。
+func createDestTableFromSrc(ctx context.Context, destConn *model.Connection, p syncTablePair,
+	cols []dbexec.ColumnInfo, indexes []dbexec.IndexInfo) error {
 	var ddl string
 	switch destConn.Driver {
 	case "postgres":
-		ddl = generateCreateTablePG(t, cols, indexes)
+		ddl = generateCreateTablePG(p, cols)
 	case "mysql":
-		ddl = generateCreateTableMySQL(t, cols, indexes)
+		ddl = generateCreateTableMySQL(p, cols)
 	default:
 		return errUnsupportedDriver
 	}
 
-	destC := dbexec.WithDatabase(destConn, t.DestDatabase)
-	_, err := dbexec.Exec(ctx, destC, ddl)
-	if err != nil {
+	destC := dbexec.WithDatabase(destConn, p.DestDatabase)
+	if _, err := dbexec.Exec(ctx, destC, ddl); err != nil {
 		return fmt.Errorf("create table: %w", err)
 	}
-
-	return updateTaskFields(t.ID, map[string]any{
-		"progress": 100,
-	})
+	// 建表后追加非主键索引（建表语句里没带）
+	for _, idx := range indexes {
+		if idx.Primary {
+			continue
+		}
+		idxDDL := generateCreateIndex(destConn.Driver, p, idx)
+		if _, err := dbexec.Exec(ctx, destC, idxDDL); err != nil {
+			// 索引失败不阻塞建表流程；记到错误链尾。
+			return fmt.Errorf("create index %s: %w", idx.Name, err)
+		}
+	}
+	return nil
 }
 
-// syncSchema 同步表结构差异。
-func syncSchema(ctx context.Context, destConn *model.Connection, t *model.Task,
+// diffAndApplySchema 把源表与目标表结构差异翻译成 DDL 并执行。
+func diffAndApplySchema(ctx context.Context, destConn *model.Connection, p syncTablePair,
 	srcCols []dbexec.ColumnInfo, srcIndexes []dbexec.IndexInfo,
 	destCols []dbexec.ColumnInfo, destIndexes []dbexec.IndexInfo) error {
 
-	destC := dbexec.WithDatabase(destConn, t.DestDatabase)
+	destC := dbexec.WithDatabase(destConn, p.DestDatabase)
 	var ddls []string
 
-	// 对比列
-	destColMap := make(map[string]dbexec.ColumnInfo)
+	destColMap := make(map[string]dbexec.ColumnInfo, len(destCols))
 	for _, dc := range destCols {
 		destColMap[dc.Name] = dc
 	}
-
 	for _, sc := range srcCols {
 		if dc, exists := destColMap[sc.Name]; !exists {
-			// 列不存在，添加列
-			ddl := generateAddColumn(destConn.Driver, t, sc)
-			ddls = append(ddls, ddl)
+			ddls = append(ddls, generateAddColumn(destConn.Driver, p, sc))
 		} else if !columnsMatch(sc, dc) {
-			// 列存在但类型不匹配，修改列
-			ddl := generateModifyColumn(destConn.Driver, t, sc)
-			ddls = append(ddls, ddl)
+			ddls = append(ddls, generateModifyColumn(destConn.Driver, p, sc))
 		}
 	}
 
-	// 对比索引
-	destIdxMap := make(map[string]dbexec.IndexInfo)
+	destIdxMap := make(map[string]dbexec.IndexInfo, len(destIndexes))
 	for _, di := range destIndexes {
 		destIdxMap[di.Name] = di
 	}
-
 	for _, si := range srcIndexes {
 		if si.Primary {
 			continue // 主键通过列定义处理
 		}
 		if _, exists := destIdxMap[si.Name]; !exists {
-			// 索引不存在，创建索引
-			ddl := generateCreateIndex(destConn.Driver, t, si)
-			ddls = append(ddls, ddl)
+			ddls = append(ddls, generateCreateIndex(destConn.Driver, p, si))
 		}
 	}
 
-	// 执行所有 DDL
 	for i, ddl := range ddls {
-		if err := checkCancel(ctx, t.ID); err != nil {
-			return err
-		}
 		if _, err := dbexec.Exec(ctx, destC, ddl); err != nil {
 			return fmt.Errorf("execute DDL [%d/%d]: %w\nSQL: %s", i+1, len(ddls), err, ddl)
 		}
-		prog := int(float64(i+1) / float64(len(ddls)) * 100)
-		_ = updateTaskFields(t.ID, map[string]any{"progress": prog})
 	}
-
-	return updateTaskFields(t.ID, map[string]any{"progress": 100})
+	return nil
 }
 
 // columnsMatch 检查两列是否匹配。
@@ -841,9 +1007,9 @@ func normalizeType(t string) string {
 }
 
 // generateCreateTablePG 生成 PostgreSQL 建表语句。
-func generateCreateTablePG(t *model.Task, cols []dbexec.ColumnInfo, indexes []dbexec.IndexInfo) string {
+func generateCreateTablePG(p syncTablePair, cols []dbexec.ColumnInfo) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("CREATE TABLE %s.%s (\n", quotePGIdent(t.DestSchema), quotePGIdent(t.DestTable)))
+	b.WriteString(fmt.Sprintf("CREATE TABLE %s.%s (\n", quotePGIdent(p.DestSchema), quotePGIdent(p.DestTable)))
 
 	for i, col := range cols {
 		if i > 0 {
@@ -880,9 +1046,9 @@ func generateCreateTablePG(t *model.Task, cols []dbexec.ColumnInfo, indexes []db
 }
 
 // generateCreateTableMySQL 生成 MySQL 建表语句。
-func generateCreateTableMySQL(t *model.Task, cols []dbexec.ColumnInfo, indexes []dbexec.IndexInfo) string {
+func generateCreateTableMySQL(p syncTablePair, cols []dbexec.ColumnInfo) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("CREATE TABLE `%s`.`%s` (\n", escapeMyIdent(t.DestDatabase), escapeMyIdent(t.DestTable)))
+	b.WriteString(fmt.Sprintf("CREATE TABLE `%s`.`%s` (\n", escapeMyIdent(p.DestDatabase), escapeMyIdent(p.DestTable)))
 
 	for i, col := range cols {
 		if i > 0 {
@@ -927,34 +1093,34 @@ func generateCreateTableMySQL(t *model.Task, cols []dbexec.ColumnInfo, indexes [
 }
 
 // generateAddColumn 生成添加列的 DDL。
-func generateAddColumn(driver string, t *model.Task, col dbexec.ColumnInfo) string {
+func generateAddColumn(driver string, p syncTablePair, col dbexec.ColumnInfo) string {
 	if driver == "postgres" {
 		return fmt.Sprintf("ALTER TABLE %s.%s ADD COLUMN %s %s%s",
-			quotePGIdent(t.DestSchema), quotePGIdent(t.DestTable),
+			quotePGIdent(p.DestSchema), quotePGIdent(p.DestTable),
 			quotePGIdent(col.Name), col.DataType,
 			ternary(!col.Nullable, " NOT NULL", ""))
 	}
 	return fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD COLUMN `%s` %s%s",
-		escapeMyIdent(t.DestDatabase), escapeMyIdent(t.DestTable),
+		escapeMyIdent(p.DestDatabase), escapeMyIdent(p.DestTable),
 		escapeMyIdent(col.Name), col.DataType,
 		ternary(!col.Nullable, " NOT NULL", ""))
 }
 
 // generateModifyColumn 生成修改列的 DDL。
-func generateModifyColumn(driver string, t *model.Task, col dbexec.ColumnInfo) string {
+func generateModifyColumn(driver string, p syncTablePair, col dbexec.ColumnInfo) string {
 	if driver == "postgres" {
 		return fmt.Sprintf("ALTER TABLE %s.%s ALTER COLUMN %s TYPE %s",
-			quotePGIdent(t.DestSchema), quotePGIdent(t.DestTable),
+			quotePGIdent(p.DestSchema), quotePGIdent(p.DestTable),
 			quotePGIdent(col.Name), col.DataType)
 	}
 	return fmt.Sprintf("ALTER TABLE `%s`.`%s` MODIFY COLUMN `%s` %s%s",
-		escapeMyIdent(t.DestDatabase), escapeMyIdent(t.DestTable),
+		escapeMyIdent(p.DestDatabase), escapeMyIdent(p.DestTable),
 		escapeMyIdent(col.Name), col.DataType,
 		ternary(!col.Nullable, " NOT NULL", ""))
 }
 
 // generateCreateIndex 生成创建索引的 DDL。
-func generateCreateIndex(driver string, t *model.Task, idx dbexec.IndexInfo) string {
+func generateCreateIndex(driver string, p syncTablePair, idx dbexec.IndexInfo) string {
 	uniqueStr := ternary(idx.Unique, "UNIQUE ", "")
 	if driver == "postgres" {
 		cols := make([]string, len(idx.Columns))
@@ -963,7 +1129,7 @@ func generateCreateIndex(driver string, t *model.Task, idx dbexec.IndexInfo) str
 		}
 		return fmt.Sprintf("CREATE %sINDEX %s ON %s.%s (%s)",
 			uniqueStr, quotePGIdent(idx.Name),
-			quotePGIdent(t.DestSchema), quotePGIdent(t.DestTable),
+			quotePGIdent(p.DestSchema), quotePGIdent(p.DestTable),
 			strings.Join(cols, ", "))
 	}
 	cols := make([]string, len(idx.Columns))
@@ -972,7 +1138,7 @@ func generateCreateIndex(driver string, t *model.Task, idx dbexec.IndexInfo) str
 	}
 	return fmt.Sprintf("CREATE %sINDEX `%s` ON `%s`.`%s` (%s)",
 		uniqueStr, escapeMyIdent(idx.Name),
-		escapeMyIdent(t.DestDatabase), escapeMyIdent(t.DestTable),
+		escapeMyIdent(p.DestDatabase), escapeMyIdent(p.DestTable),
 		strings.Join(cols, ", "))
 }
 

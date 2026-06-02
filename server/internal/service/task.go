@@ -101,6 +101,15 @@ func CreateTask(actorID uint, p CreateTaskParams) (*model.Task, error) {
 			(p.DestDatabase == "" || p.DestTable == "") {
 			return nil, errors.New("sync tasks with scope=table require dest_database and dest_table")
 		}
+	case model.TaskScopeSchema:
+		if p.TargetDatabase == "" || p.TargetSchema == "" {
+			return nil, errors.New("scope=schema requires target_database and target_schema")
+		}
+		// 同步任务需要目标 database+schema；表名按源表逐个映射，不需要单表
+		if (p.Kind == model.TaskKindDataSync || p.Kind == model.TaskKindSchemaSync) &&
+			(p.DestDatabase == "" || p.DestSchema == "") {
+			return nil, errors.New("sync tasks with scope=schema require dest_database and dest_schema")
+		}
 	case model.TaskScopeDatabase:
 		if p.TargetDatabase == "" {
 			return nil, errors.New("scope=database requires target_database")

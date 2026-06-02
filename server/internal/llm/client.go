@@ -17,11 +17,11 @@ import (
 
 // ChatRequest is what the UI asks for.
 type ChatRequest struct {
-	Prompt    string       `json:"prompt"`
-	Dialect   string       `json:"dialect"` // postgres, mysql, ...
-	TableDDL  string       `json:"table_ddl,omitempty"`
-	Selection string       `json:"selection,omitempty"`
-	Messages  []ChatMsg    `json:"messages,omitempty"`
+	Prompt    string    `json:"prompt"`
+	Dialect   string    `json:"dialect"` // postgres, mysql, ...
+	TableDDL  string    `json:"table_ddl,omitempty"`
+	Selection string    `json:"selection,omitempty"`
+	Messages  []ChatMsg `json:"messages,omitempty"`
 }
 
 // ChatMsg is a single message in OpenAI Chat Completion format.
@@ -87,7 +87,8 @@ Rules:
 - Always output a single ready-to-execute SQL statement inside a fenced code block tagged sql.
 - After the code block, optionally add a one-line explanation in the user's language.
 - Do NOT include DROP/TRUNCATE/ALTER unless the user explicitly asked.
-- Assume the default schema is public unless specified.`, dialect)
+- Assume the default schema is public unless specified.
+- For PostgreSQL sequence reset questions, prefer SELECT setval('table_column_seq', value); using the explicit sequence name. Do not use pg_get_serial_sequence unless the user asks for dynamic sequence lookup.`, dialect)
 
 	var messages []ChatMsg
 	messages = append(messages, ChatMsg{Role: "system", Content: system})

@@ -16,21 +16,24 @@ func (k TaskKind) Valid() bool {
 	return k == TaskKindExport || k == TaskKindImport || k == TaskKindSchemaSync || k == TaskKindDataSync
 }
 
-// TaskScope 任务作用范围：整连接 / 单库 / 单表。
+// TaskScope 任务作用范围：整连接 / 单库 / 单 schema / 单表。
 //
-//   - TaskScopeConnection：导出连接下所有数据库的所有表
-//   - TaskScopeDatabase  ：导出指定数据库下的所有表
-//   - TaskScopeTable     ：仅导出指定表
+//   - TaskScopeConnection：作用于连接下所有数据库的所有表
+//   - TaskScopeDatabase  ：作用于指定数据库下的所有表（含其下全部 schema）
+//   - TaskScopeSchema    ：作用于指定 database+schema 下的所有表
+//   - TaskScopeTable     ：仅作用于指定表
 type TaskScope string
 
 const (
 	TaskScopeConnection TaskScope = "connection"
 	TaskScopeDatabase   TaskScope = "database"
+	TaskScopeSchema     TaskScope = "schema"
 	TaskScopeTable      TaskScope = "table"
 )
 
 func (s TaskScope) Valid() bool {
-	return s == TaskScopeConnection || s == TaskScopeDatabase || s == TaskScopeTable
+	return s == TaskScopeConnection || s == TaskScopeDatabase ||
+		s == TaskScopeSchema || s == TaskScopeTable
 }
 
 // TaskStatus 任务生命周期。

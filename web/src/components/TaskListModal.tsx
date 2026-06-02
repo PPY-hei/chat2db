@@ -71,6 +71,7 @@ const KIND_LABEL: Record<TaskKind, string> = {
 const SCOPE_LABEL: Record<TaskScope, string> = {
   connection: "整连接",
   database: "整库",
+  schema: "整 schema",
   table: "单表",
 };
 
