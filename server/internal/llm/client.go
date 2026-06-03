@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -88,7 +89,7 @@ Rules:
 - After the code block, optionally add a one-line explanation in the user's language.
 - Do NOT include DROP/TRUNCATE/ALTER unless the user explicitly asked.
 - Assume the default schema is public unless specified.
-- For PostgreSQL sequence reset questions, prefer SELECT setval('table_column_seq', value); using the explicit sequence name. Do not use pg_get_serial_sequence unless the user asks for dynamic sequence lookup.`, dialect)
+- For PostgreSQL sequence reset questions, always use SELECT setval('table_column_seq', value); with the explicit sequence name and omit the third argument. Do not use pg_get_serial_sequence unless the user asks for dynamic sequence lookup.`, dialect)
 
 	var messages []ChatMsg
 	messages = append(messages, ChatMsg{Role: "system", Content: system})
@@ -143,7 +144,29 @@ Rules:
 	}
 	content := parsed.Choices[0].Message.Content
 	sql, expl := extractSQL(content)
+	sql = normalizeGeneratedSQL(dialect, sql)
 	return &ChatResponse{SQL: sql, Explanation: expl, Raw: content}, nil
+}
+
+func normalizeGeneratedSQL(dialect, sql string) string {
+	if strings.EqualFold(dialect, "postgres") {
+		return rewritePostgresSequenceSetval(sql)
+	}
+	return sql
+}
+
+var pgSerialSequenceSetvalRE = regexp.MustCompile(`(?is)\bsetval\s*\(\s*pg_get_serial_sequence\s*\(\s*'(?:(?:[^']|'')+\.)?([^'.]+)'\s*,\s*'([^']+)'\s*\)\s*,\s*([0-9]+)\s*(?:,\s*(?:true|false))?\s*\)`)
+
+func rewritePostgresSequenceSetval(sql string) string {
+	return pgSerialSequenceSetvalRE.ReplaceAllStringFunc(sql, func(match string) string {
+		parts := pgSerialSequenceSetvalRE.FindStringSubmatch(match)
+		if len(parts) != 4 {
+			return match
+		}
+		table := strings.ReplaceAll(parts[1], "''", "'")
+		column := strings.ReplaceAll(parts[2], "''", "'")
+		return fmt.Sprintf("setval('%s_%s_seq', %s)", table, column, parts[3])
+	})
 }
 
 // extractSQL extracts a ```sql ... ``` block; falls back to the whole content.

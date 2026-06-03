@@ -47,7 +47,7 @@ export default function SQLTab({ tab }: Props) {
   const { message } = App.useApp();
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const defaultSQL = tab.driver === "mysql" ? "-- Write SQL here\nSELECT NOW();\n" : "-- Write SQL here\nSELECT now();\n";
+  const defaultSQL = "";
   const [sql, setSQL] = useState<string>(tab.initialSQL ?? defaultSQL);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ExecuteResponse | null>(null);
