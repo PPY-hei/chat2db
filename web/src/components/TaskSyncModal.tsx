@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { App, Form, Modal, Radio, Select, Space, Typography } from "antd";
+import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
+import { App, Button, Form, Input, Modal, Radio, Select, Space, Typography } from "antd";
 import { api } from "../api";
-import type { Connection, Group, TaskKind, TaskScope } from "../types";
+import type {
+  ColumnInfo,
+  Connection,
+  ExportReplacementOnMissing,
+  ExportValueReplacement,
+  Group,
+  TaskKind,
+  TaskScope,
+} from "../types";
 import { canDDL } from "../utils/role";
 
 interface Props {
@@ -10,6 +19,21 @@ interface Props {
   onClose: () => void;
   onCreated: () => void;
 }
+
+const MAX_WHERE_CONDITION_LENGTH = 200000;
+
+interface ValueReplacementDraft {
+  id: number;
+  column?: string;
+  mappingText: string;
+  onMissing: ExportReplacementOnMissing;
+}
+
+const createValueReplacementDraft = (): ValueReplacementDraft => ({
+  id: Date.now() + Math.floor(Math.random() * 100000),
+  mappingText: "{\n  \"old_value\": \"new_value\"\n}",
+  onMissing: "keep",
+});
 
 /**
  * TaskSyncModal —— 创建同步任务（表结构同步 / 数据同步）。
@@ -23,7 +47,7 @@ interface Props {
  * 设计取舍：
  *   - 仅 admin/owner/editor 可创建；
  *   - 表名为可选：
- *       · 选了源表 + 目标表  → scope=table，单表同步；
+ *       · 选了源表（目标表可选）→ scope=table，单表同步；
  *       · 不选表（仅到 schema）→ scope=schema，遍历源 schema 下所有表，按同名映射到目标 schema；
  *   - 目标表不存在时（无论 scope=table 或 schema）会按源表结构自动建表后再同步数据。
  */
@@ -43,6 +67,9 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
   const [srcSchema, setSrcSchema] = useState<string | undefined>();
   const [srcTables, setSrcTables] = useState<string[]>([]);
   const [srcTable, setSrcTable] = useState<string | undefined>();
+  const [srcColumns, setSrcColumns] = useState<ColumnInfo[]>([]);
+  const [whereCondition, setWhereCondition] = useState("");
+  const [valueReplacements, setValueReplacements] = useState<ValueReplacementDraft[]>([]);
 
   // 目标连接相关
   const [destConnections, setDestConnections] = useState<Connection[]>([]);
@@ -73,6 +100,9 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
       setSrcSchema(undefined);
       setSrcTables([]);
       setSrcTable(undefined);
+      setSrcColumns([]);
+      setWhereCondition("");
+      setValueReplacements([]);
       setDestConnections([]);
       setDestConnID(undefined);
       setDestDatabases([]);
@@ -83,6 +113,8 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
       setDestTable(undefined);
     }
   }, [open]);
+
+  const isSingleTableDataSync = kind === "data_sync" && !!srcTable;
 
   // 加载源连接列表
   useEffect(() => {
@@ -145,6 +177,9 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
     if (!srcConnID || !srcDatabase || !srcSchema) {
       setSrcTables([]);
       setSrcTable(undefined);
+      setSrcColumns([]);
+      setWhereCondition("");
+      setValueReplacements([]);
       return;
     }
     api
@@ -152,6 +187,17 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
       .then((t) => setSrcTables(t.filter((x) => x.kind === "table").map((x) => x.name)))
       .catch((e) => message.error(e?.response?.data?.error ?? "加载源表失败"));
   }, [srcConnID, srcDatabase, srcSchema, message]);
+
+  useEffect(() => {
+    if (!srcConnID || !srcDatabase || !srcSchema || !srcTable) {
+      setSrcColumns([]);
+      return;
+    }
+    api
+      .listColumns(srcConnID, srcSchema, srcTable, srcDatabase)
+      .then(setSrcColumns)
+      .catch((e) => message.error(e?.response?.data?.error ?? "加载源列失败"));
+  }, [srcConnID, srcDatabase, srcSchema, srcTable, message]);
 
   // 加载目标数据库列表
   useEffect(() => {
@@ -196,6 +242,54 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
       .catch((e) => message.error(e?.response?.data?.error ?? "加载目标表失败"));
   }, [destConnID, destDatabase, destSchema, message]);
 
+  const updateValueReplacement = (id: number, patch: Partial<ValueReplacementDraft>) => {
+    setValueReplacements((items) =>
+      items.map((item) => (item.id === id ? { ...item, ...patch } : item))
+    );
+  };
+
+  const parseValueReplacements = (): ExportValueReplacement[] | undefined => {
+    if (!isSingleTableDataSync || valueReplacements.length === 0) {
+      return undefined;
+    }
+    const seenColumns = new Set<string>();
+    const parsed: ExportValueReplacement[] = [];
+    for (const [index, item] of valueReplacements.entries()) {
+      const column = item.column?.trim();
+      if (!column) {
+        throw new Error(`第 ${index + 1} 个字段替换规则未选择列`);
+      }
+      if (seenColumns.has(column)) {
+        throw new Error(`字段 ${column} 的替换规则重复`);
+      }
+      seenColumns.add(column);
+
+      let raw: unknown;
+      try {
+        raw = JSON.parse(item.mappingText);
+      } catch {
+        throw new Error(`字段 ${column} 的替换 JSON 格式不正确`);
+      }
+      if (!raw || Array.isArray(raw) || typeof raw !== "object") {
+        throw new Error(`字段 ${column} 的替换 JSON 必须是对象`);
+      }
+
+      const mapping: Record<string, string> = {};
+      for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+        if (Array.isArray(value) || (value !== null && typeof value === "object")) {
+          throw new Error(`字段 ${column} 的替换目标值必须是字符串、数字、布尔值或 null`);
+        }
+        mapping[key] = value === null ? "" : String(value);
+      }
+      parsed.push({
+        column,
+        mapping,
+        on_missing: item.onMissing,
+      });
+    }
+    return parsed;
+  };
+
   const submit = async () => {
     if (!groupID || !srcConnID || !destConnID) {
       message.warning("请选择连接组、源连接和目标连接");
@@ -209,11 +303,31 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
       message.warning("请选择目标数据库和 schema");
       return;
     }
-    // 表是可选的，但要么都选要么都不选
+    if (kind !== "data_sync" && (whereCondition.trim() || valueReplacements.length > 0)) {
+      message.warning("筛选条件和字段替换仅支持表数据同步");
+      return;
+    }
+    if (!srcTable && (whereCondition.trim() || valueReplacements.length > 0)) {
+      message.warning("筛选条件和字段替换仅支持单表同步");
+      return;
+    }
+    if (whereCondition.length > MAX_WHERE_CONDITION_LENGTH) {
+      message.warning(`筛选条件最多 ${MAX_WHERE_CONDITION_LENGTH} 个字符`);
+      return;
+    }
+    let parsedValueReplacements: ExportValueReplacement[] | undefined;
+    try {
+      parsedValueReplacements = parseValueReplacements();
+    } catch (e: any) {
+      message.warning(e?.message ?? "字段替换配置不正确");
+      return;
+    }
+
+    // 表是可选的；单表时目标表可留空，后端默认使用源表名
     const hasSrcTable = !!srcTable;
     const hasDestTable = !!destTable;
-    if (hasSrcTable !== hasDestTable) {
-      message.warning("源表和目标表必须同时选择或同时留空");
+    if (!hasSrcTable && hasDestTable) {
+      message.warning("未选择源表时不能单独选择目标表");
       return;
     }
     const scope: TaskScope = hasSrcTable ? "table" : "schema";
@@ -232,6 +346,8 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
         dest_database: destDatabase,
         dest_schema: destSchema,
         dest_table: destTable,
+        where_condition: isSingleTableDataSync ? whereCondition.trim() : undefined,
+        value_replacements: parsedValueReplacements,
       });
       message.success("同步任务已创建");
       onCreated();
@@ -252,11 +368,21 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
       okText="提交"
       cancelText="取消"
       destroyOnClose
-      width={720}
+      width={760}
     >
       <Form layout="vertical">
         <Form.Item label="任务类型" required>
-          <Radio.Group value={kind} onChange={(e) => setKind(e.target.value)}>
+          <Radio.Group
+            value={kind}
+            onChange={(e) => {
+              const nextKind = e.target.value as TaskKind;
+              setKind(nextKind);
+              if (nextKind !== "data_sync") {
+                setWhereCondition("");
+                setValueReplacements([]);
+              }
+            }}
+          >
             <Radio.Button value="schema_sync">表结构同步</Radio.Button>
             <Radio.Button value="data_sync">表数据同步</Radio.Button>
           </Radio.Group>
@@ -289,6 +415,9 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
               setSrcDatabase(undefined);
               setSrcSchema(undefined);
               setSrcTable(undefined);
+              setSrcColumns([]);
+              setWhereCondition("");
+              setValueReplacements([]);
             }}
             options={srcConnections.map((c) => ({
               label: `${c.name} (${c.driver})`,
@@ -306,6 +435,9 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
               setSrcDatabase(v);
               setSrcSchema(undefined);
               setSrcTable(undefined);
+              setSrcColumns([]);
+              setWhereCondition("");
+              setValueReplacements([]);
             }}
             options={srcDatabases.map((d) => ({ label: d, value: d }))}
             showSearch
@@ -321,6 +453,9 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
               onChange={(v) => {
                 setSrcSchema(v);
                 setSrcTable(undefined);
+                setSrcColumns([]);
+                setWhereCondition("");
+                setValueReplacements([]);
               }}
               options={srcSchemas.map((s) => ({ label: s, value: s }))}
               showSearch
@@ -331,7 +466,13 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
               placeholder="不选则同步整个 schema"
               value={srcTable}
               disabled={!srcSchema}
-              onChange={setSrcTable}
+              onChange={(v) => {
+                setSrcTable(v);
+                setSrcColumns([]);
+                setWhereCondition("");
+                setValueReplacements([]);
+                if (!v) setDestTable(undefined);
+              }}
               options={srcTables.map((t) => ({ label: t, value: t }))}
               showSearch
               allowClear
@@ -340,6 +481,116 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
             />
           </Form.Item>
         </Space>
+
+        {isSingleTableDataSync && (
+          <>
+            <Form.Item label="源数据筛选条件">
+              <Input.TextArea
+                value={whereCondition}
+                onChange={(e) => setWhereCondition(e.target.value)}
+                rows={3}
+                maxLength={MAX_WHERE_CONDITION_LENGTH}
+                placeholder="tenant_id = 1001 AND deleted_at IS NULL"
+                showCount
+              />
+            </Form.Item>
+
+            <Form.Item label="字段替换">
+              {valueReplacements.length > 0 && (
+                <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+                  <Button
+                    type="link"
+                    size="small"
+                    icon={<PlusOutlined />}
+                    disabled={!srcColumns.length}
+                    title="添加字段替换"
+                    onClick={() =>
+                      setValueReplacements((items) => [
+                        ...items,
+                        createValueReplacementDraft(),
+                      ])
+                    }
+                  >
+                    添加
+                  </Button>
+                </div>
+              )}
+              {valueReplacements.length === 0 ? (
+                <Button
+                  icon={<PlusOutlined />}
+                  disabled={!srcColumns.length}
+                  title="添加字段替换"
+                  onClick={() => setValueReplacements([createValueReplacementDraft()])}
+                >
+                  添加字段替换
+                </Button>
+              ) : (
+                <div style={{ display: "grid", gap: 12 }}>
+                  {valueReplacements.map((item, index) => (
+                    <div
+                      key={item.id}
+                      style={{
+                        border: "1px solid #f0f0f0",
+                        borderRadius: 6,
+                        padding: 12,
+                        background: "#fff",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "minmax(180px, 1fr) 150px 32px",
+                          gap: 8,
+                          alignItems: "center",
+                          marginBottom: 8,
+                        }}
+                      >
+                        <Select
+                          placeholder="选择列"
+                          value={item.column}
+                          options={srcColumns.map((col) => ({
+                            label: col.name,
+                            value: col.name,
+                          }))}
+                          onChange={(column) => updateValueReplacement(item.id, { column })}
+                          showSearch
+                        />
+                        <Select<ExportReplacementOnMissing>
+                          value={item.onMissing}
+                          options={[
+                            { label: "未匹配保留", value: "keep" },
+                            { label: "未匹配置空值", value: "empty" },
+                          ]}
+                          onChange={(onMissing) =>
+                            updateValueReplacement(item.id, { onMissing })
+                          }
+                        />
+                        <Button
+                          aria-label={`删除第 ${index + 1} 个字段替换`}
+                          title="删除字段替换"
+                          icon={<DeleteOutlined />}
+                          onClick={() =>
+                            setValueReplacements((items) =>
+                              items.filter((x) => x.id !== item.id)
+                            )
+                          }
+                        />
+                      </div>
+                      <Input.TextArea
+                        value={item.mappingText}
+                        onChange={(e) =>
+                          updateValueReplacement(item.id, { mappingText: e.target.value })
+                        }
+                        rows={4}
+                        placeholder={'{\n  "old_value": "new_value"\n}'}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Form.Item>
+          </>
+        )}
 
         <Typography.Title level={5} style={{ marginTop: 16 }}>
           目标连接
@@ -394,7 +645,7 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
           </Form.Item>
           <Form.Item label="目标表（可选）" style={{ flex: 1 }}>
             <Select
-              placeholder="不选则按同名映射到目标 schema"
+              placeholder={srcTable ? "不选则使用源表名" : "不选则按同名映射到目标 schema"}
               value={destTable}
               disabled={!destSchema}
               onChange={setDestTable}
@@ -410,7 +661,7 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
           {kind === "schema_sync"
             ? "表结构同步：对比源表与目标表结构差异，生成并执行 DDL 同步字段、索引等。不选表则遍历源 schema 下所有表，按同名映射到目标 schema；目标表不存在会按源表结构自动建表。"
-            : "表数据同步：从源表读取所有数据，批量插入到目标表（仅同步同名列）。不选表则遍历源 schema 下所有表，按同名映射到目标 schema；目标表不存在会按源表结构先建表再同步数据。"}
+            : "表数据同步：从源表读取数据，批量插入到目标表（仅同步同名列）。单表同步可填写源数据筛选条件和字段替换；目标表不选时使用源表名。不选源表则遍历源 schema 下所有表，按同名映射到目标 schema。"}
         </Typography.Paragraph>
       </Form>
     </Modal>

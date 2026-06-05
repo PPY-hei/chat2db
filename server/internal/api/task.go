@@ -21,7 +21,7 @@ import (
 type createTaskRequest struct {
 	GroupID        uint            `json:"group_id"`
 	ConnID         uint            `json:"conn_id"`
-	TargetConnID   uint            `json:"target_conn_id"`   // 目标连接（仅同步任务使用）
+	TargetConnID   uint            `json:"target_conn_id"` // 目标连接（仅同步任务使用）
 	Kind           model.TaskKind  `json:"kind"`
 	Scope          model.TaskScope `json:"scope"`
 	TargetDatabase string          `json:"target_database"`
@@ -30,6 +30,11 @@ type createTaskRequest struct {
 	DestDatabase   string          `json:"dest_database"` // 目标数据库（仅同步任务使用）
 	DestSchema     string          `json:"dest_schema"`   // 目标 schema（仅同步任务使用）
 	DestTable      string          `json:"dest_table"`    // 目标表（仅同步任务使用）
+
+	ExportFormat        string                           `json:"export_format"`          // csv | insert_sql（仅导出任务使用）
+	WhereCondition      string                           `json:"where_condition"`        // 单表导出/数据同步的 WHERE 条件片段
+	OnConflictDoNothing bool                             `json:"on_conflict_do_nothing"` // INSERT SQL 冲突时忽略
+	ValueReplacements   []service.ExportValueReplacement `json:"value_replacements"`     // INSERT SQL/单表数据同步列值替换
 }
 
 // CreateTask 新建任务（创建者需要在目标组中至少为 editor）。
@@ -41,17 +46,21 @@ func CreateTask(c *gin.Context) {
 		return
 	}
 	t, err := service.CreateTask(uid, service.CreateTaskParams{
-		GroupID:        req.GroupID,
-		ConnID:         req.ConnID,
-		TargetConnID:   req.TargetConnID,
-		Kind:           req.Kind,
-		Scope:          req.Scope,
-		TargetDatabase: strings.TrimSpace(req.TargetDatabase),
-		TargetSchema:   strings.TrimSpace(req.TargetSchema),
-		TargetTable:    strings.TrimSpace(req.TargetTable),
-		DestDatabase:   strings.TrimSpace(req.DestDatabase),
-		DestSchema:     strings.TrimSpace(req.DestSchema),
-		DestTable:      strings.TrimSpace(req.DestTable),
+		GroupID:             req.GroupID,
+		ConnID:              req.ConnID,
+		TargetConnID:        req.TargetConnID,
+		Kind:                req.Kind,
+		Scope:               req.Scope,
+		TargetDatabase:      strings.TrimSpace(req.TargetDatabase),
+		TargetSchema:        strings.TrimSpace(req.TargetSchema),
+		TargetTable:         strings.TrimSpace(req.TargetTable),
+		DestDatabase:        strings.TrimSpace(req.DestDatabase),
+		DestSchema:          strings.TrimSpace(req.DestSchema),
+		DestTable:           strings.TrimSpace(req.DestTable),
+		ExportFormat:        strings.TrimSpace(req.ExportFormat),
+		ExportWhere:         strings.TrimSpace(req.WhereCondition),
+		OnConflictDoNothing: req.OnConflictDoNothing,
+		ValueReplacements:   req.ValueReplacements,
 	})
 	if err != nil {
 		badRequest(c, err)

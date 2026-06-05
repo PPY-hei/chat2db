@@ -1,0 +1,463 @@
+{
+  "left_file": "/Users/chy/Downloads/result (1).csv",
+  "right_file": "/Users/chy/Downloads/result.csv",
+  "left_rows": 222,
+  "right_rows": 237,
+  "matched_count": 158,
+  "unmatched_count": 64,
+  "ambiguous_resolved_count": 6,
+  "ambiguous_resolved": [
+    {
+      "left_id": "4328316381955758592",
+      "left_shop_name": "郑州惠济省汽贸",
+      "left_shop_code": "HAAU002",
+      "right_id": "4328315762563724544",
+      "right_shop_name": "启境汽车授权用户中心·郑州惠济省汽贸",
+      "right_shop_code": "HAAU002",
+      "match_type": "shop_code",
+      "reason": "name_similarity_within_duplicate_candidates:0.560",
+      "candidate_count": 2
+    },
+    {
+      "left_id": "4328316381997221888",
+      "left_shop_name": "启境汽车授权用户中心·启境佛山海八路店",
+      "left_shop_code": "GDEU001",
+      "right_id": "4328315483420456192",
+      "right_shop_name": "启境汽车授权用户中心·启境佛山海八路店",
+      "right_shop_code": "GDEU001",
+      "match_type": "shop_code",
+      "reason": "exact_name_within_duplicate_candidates",
+      "candidate_count": 2
+    },
+    {
+      "left_id": "4328313263784827392",
+      "left_shop_name": "启境汽车授权体验中心·二号0110经销商门店",
+      "left_shop_code": "SHAE001",
+      "right_id": "4328315483424961792",
+      "right_shop_name": "启境汽车授权体验中心·二号0110经销商门店",
+      "right_shop_code": "SHAE001",
+      "match_type": "shop_code",
+      "reason": "exact_name_within_duplicate_candidates",
+      "candidate_count": 2
+    },
+    {
+      "left_id": "4328287194180121856",
+      "left_shop_name": "启境汽车授权用户中心·郑州惠济省汽贸",
+      "left_shop_code": "HAAU002",
+      "right_id": "4328326556744534784",
+      "right_shop_name": "启境汽车授权用户中心·郑州惠济省汽贸",
+      "right_shop_code": "HAAU002",
+      "match_type": "shop_code",
+      "reason": "duplicate_exact_name_first_unused",
+      "candidate_count": 2
+    },
+    {
+      "left_id": "4328287199824213248",
+      "left_shop_name": "启境汽车授权用户中心·佛山海八路",
+      "left_shop_code": "GDEU001",
+      "right_id": "4328326556435778304",
+      "right_shop_name": "启境汽车授权用户中心·佛山海八路",
+      "right_shop_code": "GDEU001",
+      "match_type": "shop_code",
+      "reason": "exact_name_within_duplicate_candidates",
+      "candidate_count": 2
+    },
+    {
+      "left_id": "4328314316445358592",
+      "left_shop_name": "启境汽车授权体验中心.上海中升长宁龙之梦",
+      "left_shop_code": "SHAE001",
+      "right_id": "4328326556583430912",
+      "right_shop_name": "启境汽车授权体验中心·上海长宁龙之梦",
+      "right_shop_code": "SHAE001",
+      "match_type": "shop_code",
+      "reason": "name_similarity_within_duplicate_candidates:0.947",
+      "candidate_count": 2
+    }
+  ],
+  "unmatched": [
+    {
+      "left_id": "4328326291024413696",
+      "left_shop_name": "启境汽车授权用户中心·测试门店发送DMS",
+      "left_shop_code": "GDAE011",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328326291026876928",
+      "left_shop_name": "启境汽车授权体验中心·下发DMMS",
+      "left_shop_code": "GDAE012",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328316381953868800",
+      "left_shop_name": "启境汽车授权用户中心·门店保证金0414",
+      "left_shop_code": "BJAU005",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328324875475059712",
+      "left_shop_name": "启境汽车授权体验中心·0514北京一号门店",
+      "left_shop_code": "SHAE006",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328324875490591744",
+      "left_shop_name": "启境汽车旗舰店·第一家华南店",
+      "left_shop_code": "GDAF002",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328324875492891136",
+      "left_shop_name": "启境汽车授权用户中心·测试特殊字符门店",
+      "left_shop_code": "GDAU030",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328324875495213056",
+      "left_shop_name": "启境汽车授权用户中心·孙燕姿的我不难过",
+      "left_shop_code": "GDCU015",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328314325900411904",
+      "left_shop_name": "启境汽车授权用户中心·济南槐荫经十西路",
+      "left_shop_code": "",
+      "match_type": "shop_name_when_left_shop_code_empty"
+    },
+    {
+      "left_id": "4328326832703429120",
+      "left_shop_name": "启境汽车授权用户中心·成都金牛蜀西路",
+      "left_shop_code": "SCAU002",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328326837589165056",
+      "left_shop_name": "启境汽车授权用户中心·榆林麻黄梁汽车城",
+      "left_shop_code": "SNKU001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328326838086436864",
+      "left_shop_name": "启境用户中心-兰州安宁金瑞宝店",
+      "left_shop_code": "GSAU001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328314314175481856",
+      "left_shop_name": "启境汽车授权用户中心·苏州虎丘塔园路",
+      "left_shop_code": "JSEU001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263720487424",
+      "left_shop_name": "石家庄裕华万达广场",
+      "left_shop_code": "27d9afe523d7422e82b8106956d890f1",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263731694080",
+      "left_shop_name": "哈尔滨南岗西城",
+      "left_shop_code": "284321fdf9244c95af4c09abe1e65840",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263737543168",
+      "left_shop_name": "启境汽车授权用户中心·冒烟20260508",
+      "left_shop_code": "SHAU118",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263721628672",
+      "left_shop_name": "石家庄裕华汽车园",
+      "left_shop_code": "6571ae1310444a97b63ca4bd8c61a949",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263732769792",
+      "left_shop_name": "测试门店",
+      "left_shop_code": "d81ee51b3413413fbb7b932333f4ad20",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263743812608",
+      "left_shop_name": "南昌王府井",
+      "left_shop_code": "7647a4441f674443815a35a3029f75e0",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263726692352",
+      "left_shop_name": "测试门店0521",
+      "left_shop_code": "05211",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263735900160",
+      "left_shop_name": "启境汽车授权用户中心·接口测试用户中心",
+      "left_shop_code": "GDAU033",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263751710720",
+      "left_shop_name": "自动化组织批量成功",
+      "left_shop_code": "AUTO_ACCEPT_ORG_BATCH_OK",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263770257408",
+      "left_shop_name": "启境汽车授权用户中心·字符测试用户中心",
+      "left_shop_code": "GDAU022",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263753353728",
+      "left_shop_name": "自动化组织单条成功",
+      "left_shop_code": "AUTO_ACCEPT_ORG_SINGLE_OK",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263772129792",
+      "left_shop_name": "启境汽车授权用户中心·短信验证不要修改角色",
+      "left_shop_code": "GDAU032",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263773811712",
+      "left_shop_name": "启境汽车授权用户中心·横向越权1",
+      "left_shop_code": "GDAU111",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263775500288",
+      "left_shop_name": "启境汽车授权用户中心·广州测试门店5",
+      "left_shop_code": "GDAU115",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263780890624",
+      "left_shop_name": "启境汽车授权用户中心·启境广东深圳店",
+      "left_shop_code": "GDBU124",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263777520128",
+      "left_shop_name": "启境汽车旗舰店·深圳门店01",
+      "left_shop_code": "GDBF107",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328313263779202048",
+      "left_shop_name": "启境汽车授权用户中心·广州测试门店4",
+      "left_shop_code": "GDBU116",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328326838617004544",
+      "left_shop_name": "启境汽车授权体验中心·邯郸丛台万象汇",
+      "left_shop_code": "HEDE001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328326839089136640",
+      "left_shop_name": "启境汽车授权体验中心·金牛凯德广场店",
+      "left_shop_code": "SCAE003",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328327093169293312",
+      "left_shop_name": "启境汽车授权体验中心·杭州萧山汽车城",
+      "left_shop_code": "",
+      "match_type": "shop_name_when_left_shop_code_empty"
+    },
+    {
+      "left_id": "4328327094732118528",
+      "left_shop_name": "启境汽车授权体验中心·济南历下高新万达",
+      "left_shop_code": "",
+      "match_type": "shop_name_when_left_shop_code_empty"
+    },
+    {
+      "left_id": "4328308428687214592",
+      "left_shop_name": "启境汽车授权体验中心·海口秀英仁恒里店",
+      "left_shop_code": "HIAE001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328287212852458752",
+      "left_shop_name": "启境汽车授权用户中心·鄂尔多斯东胜铜川汽博园",
+      "left_shop_code": "NMKU001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328314312012711936",
+      "left_shop_name": "启境汽车授权用户中心·沈阳铁西北二路",
+      "left_shop_code": "LNAU001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328314323893230080",
+      "left_shop_name": "启境汽车授权体验中心-苏州中升绿宝广场",
+      "left_shop_code": "",
+      "match_type": "shop_name_when_left_shop_code_empty"
+    },
+    {
+      "left_id": "4328314325185321472",
+      "left_shop_name": "启境汽车授权用户中心·邢台北京金时",
+      "left_shop_code": "",
+      "match_type": "shop_name_when_left_shop_code_empty"
+    },
+    {
+      "left_id": "4328303160418336768",
+      "left_shop_name": "启境汽车授权用户中心·金华金东汽车城",
+      "left_shop_code": "ZJGU002",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328303165849070336",
+      "left_shop_name": "启境汽车授权体验中心·长春欧亚卖场",
+      "left_shop_code": "JLAE002",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328314313753872384",
+      "left_shop_name": "启境汽车授权用户中心·南通东方汽车城",
+      "left_shop_code": "JSFU001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328304113932891392",
+      "left_shop_name": "启境汽车授权城市展厅·泉州晋江豪信汽车城",
+      "left_shop_code": "",
+      "match_type": "shop_name_when_left_shop_code_empty"
+    },
+    {
+      "left_id": "4328304112084757248",
+      "left_shop_name": "启境汽车授权体验中心·温州印象城MEGA",
+      "left_shop_code": "ZJCE001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328322618748815360",
+      "left_shop_name": "启境汽车授权体验中心·福州华奥仓山中骏世界城店",
+      "left_shop_code": "",
+      "match_type": "shop_name_when_left_shop_code_empty"
+    },
+    {
+      "left_id": "4328308429397105152",
+      "left_shop_name": "启境汽车授权体验中心·台州椒江万达店",
+      "left_shop_code": "",
+      "match_type": "shop_name_when_left_shop_code_empty"
+    },
+    {
+      "left_id": "4328317089877115904",
+      "left_shop_name": "启境汽车授权体验中心·金华义乌稠城绿地朝阳门",
+      "left_shop_code": "",
+      "match_type": "shop_name_when_left_shop_code_empty"
+    },
+    {
+      "left_id": "4328322611493984768",
+      "left_shop_name": "启境汽车授权体验中心·天津滨海万达广场",
+      "left_shop_code": "TJAE001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328322612227195904",
+      "left_shop_name": "启境汽车授权体验中心·杭州滨湖银泰IN77",
+      "left_shop_code": "",
+      "match_type": "shop_name_when_left_shop_code_empty"
+    },
+    {
+      "left_id": "4328322619110606848",
+      "left_shop_name": "启境汽车授权体验中心·福州华奥台江苏宁广场店",
+      "left_shop_code": "",
+      "match_type": "shop_name_when_left_shop_code_empty"
+    },
+    {
+      "left_id": "4328287221340777216",
+      "left_shop_name": "启境汽车授权用户中心·深圳宝安福永博览中心",
+      "left_shop_code": "GDBU003",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328320047437748736",
+      "left_shop_name": "启境汽车授权体验中心·南京江北弘阳广场",
+      "left_shop_code": "",
+      "match_type": "shop_name_when_left_shop_code_empty"
+    },
+    {
+      "left_id": "4328314318186563584",
+      "left_shop_name": "启境汽车授权用户中心·唐山开平开越路",
+      "left_shop_code": "HEBU001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328288838311723008",
+      "left_shop_name": "启境汽车授权用户中心·东莞南城莞太路",
+      "left_shop_code": "GDSU001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328307396033501696",
+      "left_shop_name": "启境汽车授权体验中心·鄂尔多斯东胜星河COCOCITY",
+      "left_shop_code": "NMKE001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328315836135736320",
+      "left_shop_name": "启境汽车授权体验中心·上海绿地缤纷",
+      "left_shop_code": "",
+      "match_type": "shop_name_when_left_shop_code_empty"
+    },
+    {
+      "left_id": "4328294627497902080",
+      "left_shop_name": "启境汽车授权体验中心·苏州太仓万达广场",
+      "left_shop_code": "JSEE001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328308418214140416",
+      "left_shop_name": "启境汽车授权体验中心·南京雨花台虹悦城",
+      "left_shop_code": "JSAE001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328314326954968064",
+      "left_shop_name": "启境汽车授权体验中心·金时邢台逗号立方店",
+      "left_shop_code": "",
+      "match_type": "shop_name_when_left_shop_code_empty"
+    },
+    {
+      "left_id": "4328308427912479744",
+      "left_shop_name": "启境汽车授权城市展厅·台州浙江元基方林汽车城店",
+      "left_shop_code": "",
+      "match_type": "shop_name_when_left_shop_code_empty"
+    },
+    {
+      "left_id": "4328322610545968128",
+      "left_shop_name": "启境汽车授权用户中心·银川德胜汽车园 启境汽车授权体验中心·银川建发悠阅城",
+      "left_shop_code": "NXAU001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328292787347565312",
+      "left_shop_name": "启境汽车授权用户中心·泉州鲤城南环路",
+      "left_shop_code": "FJCU001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328287231798132736",
+      "left_shop_name": "启境汽车授权用户中心·南京江宁汽车园",
+      "left_shop_code": "JSAU002",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328322609419311616",
+      "left_shop_name": "启境汽车授权用户中心·临沂罗庄沂河路",
+      "left_shop_code": "SDQU001",
+      "match_type": "shop_code"
+    },
+    {
+      "left_id": "4328308427549001728",
+      "left_shop_name": "启境汽车授权用户中心·海口南海大道店",
+      "left_shop_code": "",
+      "match_type": "shop_name_when_left_shop_code_empty"
+    }
+  ]
+}

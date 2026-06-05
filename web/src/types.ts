@@ -205,6 +205,7 @@ export interface Task {
   dest_database: string; // 目标数据库（仅同步任务使用）
   dest_schema: string; // 目标 schema（仅同步任务使用）
   dest_table: string; // 目标表（仅同步任务使用）
+  params: string;
   status: TaskStatus;
   progress: number;
   processed_rows: number;
@@ -244,6 +245,14 @@ export interface TaskPage {
   visible_group_ids: number[];
 }
 
+export type ExportReplacementOnMissing = "keep" | "empty";
+
+export interface ExportValueReplacement {
+  column: string;
+  mapping: Record<string, string>;
+  on_missing?: ExportReplacementOnMissing;
+}
+
 export interface CreateTaskRequest {
   group_id: number;
   conn_id: number;
@@ -256,4 +265,8 @@ export interface CreateTaskRequest {
   dest_database?: string; // 目标数据库（仅同步任务使用）
   dest_schema?: string; // 目标 schema（仅同步任务使用）
   dest_table?: string; // 目标表（仅同步任务使用）
+  export_format?: "csv" | "insert_sql";
+  where_condition?: string;
+  on_conflict_do_nothing?: boolean;
+  value_replacements?: ExportValueReplacement[];
 }

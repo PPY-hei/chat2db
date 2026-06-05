@@ -55,10 +55,10 @@ const (
 //   - CancelRequested 是软取消信号：worker 在 row-loop 中周期性检查。
 //   - 对于同步任务（schema_sync/data_sync），ConnID 是源连接，TargetConnID 是目标连接。
 type Task struct {
-	ID           uint   `gorm:"primaryKey" json:"id"`
-	GroupID      uint   `gorm:"not null;index" json:"group_id"`
-	ConnID       uint   `gorm:"not null;index" json:"conn_id"`
-	TargetConnID uint   `gorm:"not null;default:0;index" json:"target_conn_id"` // 目标连接（仅同步任务使用）
+	ID           uint `gorm:"primaryKey" json:"id"`
+	GroupID      uint `gorm:"not null;index" json:"group_id"`
+	ConnID       uint `gorm:"not null;index" json:"conn_id"`
+	TargetConnID uint `gorm:"not null;default:0;index" json:"target_conn_id"` // 目标连接（仅同步任务使用）
 
 	Kind  TaskKind  `gorm:"size:16;not null;index" json:"kind"`
 	Scope TaskScope `gorm:"size:16;not null" json:"scope"`
@@ -74,10 +74,14 @@ type Task struct {
 	DestSchema   string `gorm:"size:128;not null;default:''" json:"dest_schema"`
 	DestTable    string `gorm:"size:128;not null;default:''" json:"dest_table"`
 
+	// Params 保存任务特有的扩展参数，例如导出格式、筛选条件等。
+	Params string `gorm:"type:text" json:"params"`
+
 	Status   TaskStatus `gorm:"size:16;not null;index" json:"status"`
 	Progress int        `gorm:"not null;default:0" json:"progress"`
 
 	ProcessedRows int64 `gorm:"not null;default:0" json:"processed_rows"`
+	FailedRows    int64 `gorm:"not null;default:0" json:"failed_rows"`
 	TotalRows     int64 `gorm:"not null;default:0" json:"total_rows"`
 	TotalTables   int   `gorm:"not null;default:0" json:"total_tables"`
 	DoneTables    int   `gorm:"not null;default:0" json:"done_tables"`

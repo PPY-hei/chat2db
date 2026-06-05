@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/chy/chat2db/server/internal/db"
@@ -43,7 +44,7 @@ func MyGroupIDs(userID uint) ([]uint, error) {
 type CreateTaskParams struct {
 	GroupID        uint
 	ConnID         uint
-	TargetConnID   uint   // 目标连接（仅同步任务使用）
+	TargetConnID   uint // 目标连接（仅同步任务使用）
 	Kind           model.TaskKind
 	Scope          model.TaskScope
 	TargetDatabase string
@@ -52,6 +53,11 @@ type CreateTaskParams struct {
 	DestDatabase   string // 目标数据库（仅同步任务使用）
 	DestSchema     string // 目标 schema（仅同步任务使用）
 	DestTable      string // 目标表（仅同步任务使用）
+
+	ExportFormat        string
+	ExportWhere         string
+	OnConflictDoNothing bool
+	ValueReplacements   []ExportValueReplacement
 }
 
 // CreateTask 校验权限 + 入库 + 入队。返回已分配 ID 的 Task。
@@ -87,6 +93,54 @@ func CreateTask(actorID uint, p CreateTaskParams) (*model.Task, error) {
 		}
 		if targetConn.GroupID != p.GroupID {
 			return nil, errors.New("target connection does not belong to this group")
+		}
+	}
+	if (p.Kind == model.TaskKindDataSync || p.Kind == model.TaskKindSchemaSync) &&
+		p.Scope == model.TaskScopeTable &&
+		strings.TrimSpace(p.DestTable) == "" {
+		p.DestTable = p.TargetTable
+	}
+
+	var taskParams string
+	if p.Kind == model.TaskKindExport {
+		if p.Scope != model.TaskScopeTable {
+			if strings.TrimSpace(p.ExportWhere) != "" {
+				return nil, errors.New("export where condition is only supported for scope=table")
+			}
+			if strings.TrimSpace(p.ExportFormat) == exportFormatInsertSQL {
+				return nil, errors.New("insert_sql export is only supported for scope=table")
+			}
+			if len(p.ValueReplacements) > 0 {
+				return nil, errors.New("value replacements are only supported for scope=table")
+			}
+		}
+		var err error
+		taskParams, err = buildExportTaskParams(p.ExportFormat, p.ExportWhere, p.OnConflictDoNothing, p.ValueReplacements)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if p.Kind == model.TaskKindDataSync {
+		if p.Scope != model.TaskScopeTable {
+			if strings.TrimSpace(p.ExportWhere) != "" {
+				return nil, errors.New("data sync where condition is only supported for scope=table")
+			}
+			if len(p.ValueReplacements) > 0 {
+				return nil, errors.New("data sync value replacements are only supported for scope=table")
+			}
+		}
+		var err error
+		taskParams, err = buildDataSyncTaskParams(p.ExportWhere, p.ValueReplacements)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if p.Kind == model.TaskKindSchemaSync {
+		if strings.TrimSpace(p.ExportWhere) != "" {
+			return nil, errors.New("schema sync does not support where condition")
+		}
+		if len(p.ValueReplacements) > 0 {
+			return nil, errors.New("schema sync does not support value replacements")
 		}
 	}
 
@@ -138,6 +192,7 @@ func CreateTask(actorID uint, p CreateTaskParams) (*model.Task, error) {
 		DestDatabase:   p.DestDatabase,
 		DestSchema:     p.DestSchema,
 		DestTable:      p.DestTable,
+		Params:         taskParams,
 		Status:         model.TaskStatusPending,
 		CreatedByID:    actorID,
 		CreatorName:    creatorName,

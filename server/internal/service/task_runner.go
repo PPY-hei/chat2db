@@ -2,14 +2,18 @@ package service
 
 import (
 	"archive/zip"
+	"bufio"
 	"context"
 	"database/sql"
 	"encoding/csv"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +22,8 @@ import (
 	"github.com/chy/chat2db/server/internal/dbexec"
 	"github.com/chy/chat2db/server/internal/model"
 	mysqldriver "github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 var (
@@ -29,12 +35,35 @@ var (
 
 const batchSize = 1000 // 数据同步批量大小
 
+type syncDataResult struct {
+	SourceRows  int64
+	SuccessRows int64
+	FailedRows  int64
+}
+
+func (r syncDataResult) add(other syncDataResult) syncDataResult {
+	r.SourceRows += other.SourceRows
+	r.SuccessRows += other.SuccessRows
+	r.FailedRows += other.FailedRows
+	return r
+}
+
 // runExportTask 是导出任务的统一入口：先列出"要导出的表清单"，
-// 再循环逐表流式 dump 到 CSV；多张表时打 zip，单张表保留单 CSV。
+// 再循环逐表流式 dump 到目标格式；多张表时打 zip，单张表保留原文件。
 func runExportTask(ctx context.Context, t *model.Task) error {
 	conn, err := loadConnection(t.ConnID)
 	if err != nil {
 		return fmt.Errorf("load connection: %w", err)
+	}
+	opts, err := parseExportTaskOptions(t.Params)
+	if err != nil {
+		return err
+	}
+	if opts.Format == exportFormatInsertSQL && t.Scope != model.TaskScopeTable {
+		return errors.New("insert_sql export is only supported for scope=table")
+	}
+	if opts.Where != "" && t.Scope != model.TaskScopeTable {
+		return errors.New("export where condition is only supported for scope=table")
 	}
 
 	tables, err := resolveExportTables(ctx, conn, t)
@@ -58,20 +87,29 @@ func runExportTask(ctx context.Context, t *model.Task) error {
 		return err
 	}
 
-	csvFiles := make([]string, 0, len(tables))
+	outFiles := make([]string, 0, len(tables))
 	var totalRows int64
 	for i, et := range tables {
 		if err := checkCancel(ctx, t.ID); err != nil {
 			return err
 		}
 
-		fname := safeFileName(fmt.Sprintf("%s.%s.%s.csv", et.Database, et.Schema, et.Table))
+		ext := "csv"
+		if opts.Format == exportFormatInsertSQL {
+			ext = "sql"
+		}
+		fname := safeFileName(fmt.Sprintf("%s.%s.%s.%s", et.Database, et.Schema, et.Table, ext))
 		fpath := filepath.Join(taskDir, fname)
-		rows, err := dumpTableCSV(ctx, conn, et, fpath, t)
+		var rows int64
+		if opts.Format == exportFormatInsertSQL {
+			rows, err = dumpTableInsertSQL(ctx, conn, et, fpath, t, opts)
+		} else {
+			rows, err = dumpTableCSV(ctx, conn, et, fpath, t, opts)
+		}
 		if err != nil {
 			return fmt.Errorf("dump %s.%s.%s: %w", et.Database, et.Schema, et.Table, err)
 		}
-		csvFiles = append(csvFiles, fpath)
+		outFiles = append(outFiles, fpath)
 		totalRows += rows
 
 		// 进度按"已完成表数 / 总表数" 计算（粒度更稳）。
@@ -83,21 +121,21 @@ func runExportTask(ctx context.Context, t *model.Task) error {
 		})
 	}
 
-	// 多表时打 zip。单表保留单 CSV 即可。
+	// 多表时打 zip。单表保留原文件即可。
 	var finalPath string
 	var finalSize int64
-	if len(csvFiles) == 1 {
-		finalPath = csvFiles[0]
+	if len(outFiles) == 1 {
+		finalPath = outFiles[0]
 		if info, err := os.Stat(finalPath); err == nil {
 			finalSize = info.Size()
 		}
 	} else {
 		zipPath := filepath.Join(taskDir, fmt.Sprintf("export-%d.zip", t.ID))
-		if err := zipFiles(zipPath, csvFiles); err != nil {
+		if err := zipFiles(zipPath, outFiles); err != nil {
 			return fmt.Errorf("zip: %w", err)
 		}
-		// 打包后删除中间 CSV 以省盘。
-		for _, f := range csvFiles {
+		// 打包后删除中间文件以省盘。
+		for _, f := range outFiles {
 			_ = os.Remove(f)
 		}
 		finalPath = zipPath
@@ -178,7 +216,7 @@ func listAllTablesInDatabase(ctx context.Context, conn *model.Connection, databa
 
 // dumpTableCSV 流式导出单表为 CSV，返回行数。
 // PG / MySQL 两条路径，避开了 QUERY_MAX_ROWS / QUERY_TIMEOUT 的限制。
-func dumpTableCSV(ctx context.Context, conn *model.Connection, et exportTable, outPath string, t *model.Task) (int64, error) {
+func dumpTableCSV(ctx context.Context, conn *model.Connection, et exportTable, outPath string, t *model.Task, opts exportTaskOptions) (int64, error) {
 	f, err := os.Create(outPath)
 	if err != nil {
 		return 0, err
@@ -189,21 +227,21 @@ func dumpTableCSV(ctx context.Context, conn *model.Connection, et exportTable, o
 
 	switch conn.Driver {
 	case "postgres":
-		return dumpPGTable(ctx, conn, et, w, t)
+		return dumpPGTable(ctx, conn, et, w, t, opts)
 	case "mysql":
-		return dumpMySQLTable(ctx, conn, et, w, t)
+		return dumpMySQLTable(ctx, conn, et, w, t, opts)
 	default:
 		return 0, fmt.Errorf("driver %s not supported", conn.Driver)
 	}
 }
 
-func dumpPGTable(ctx context.Context, conn *model.Connection, et exportTable, w *csv.Writer, t *model.Task) (int64, error) {
+func dumpPGTable(ctx context.Context, conn *model.Connection, et exportTable, w *csv.Writer, t *model.Task, opts exportTaskOptions) (int64, error) {
 	c := dbexec.WithDatabase(conn, et.Database)
 	pool, err := dbexec.AcquirePGPool(ctx, c)
 	if err != nil {
 		return 0, err
 	}
-	q := fmt.Sprintf(`SELECT * FROM %s.%s`, quotePGIdent(et.Schema), quotePGIdent(et.Table))
+	q := buildPGExportSelect(et, opts.Where)
 	rows, err := pool.Query(ctx, q)
 	if err != nil {
 		return 0, err
@@ -242,14 +280,14 @@ func dumpPGTable(ctx context.Context, conn *model.Connection, et exportTable, w 
 	return n, rows.Err()
 }
 
-func dumpMySQLTable(ctx context.Context, conn *model.Connection, et exportTable, w *csv.Writer, t *model.Task) (int64, error) {
+func dumpMySQLTable(ctx context.Context, conn *model.Connection, et exportTable, w *csv.Writer, t *model.Task, opts exportTaskOptions) (int64, error) {
 	c := dbexec.WithDatabase(conn, et.Database)
 	pool, err := dbexec.AcquireMySQLPool(ctx, c)
 	if err != nil {
 		return 0, err
 	}
 	// MySQL 中 database == schema；用 backtick 限定。
-	q := fmt.Sprintf("SELECT * FROM `%s`.`%s`", escapeMyIdent(et.Database), escapeMyIdent(et.Table))
+	q := buildMySQLExportSelect(et, opts.Where)
 	rows, err := pool.QueryContext(ctx, q)
 	if err != nil {
 		return 0, err
@@ -290,6 +328,733 @@ func dumpMySQLTable(ctx context.Context, conn *model.Connection, et exportTable,
 		n++
 	}
 	return n, rows.Err()
+}
+
+// dumpTableInsertSQL 流式导出单表为逐行 INSERT SQL，返回行数。
+func dumpTableInsertSQL(ctx context.Context, conn *model.Connection, et exportTable, outPath string, t *model.Task, opts exportTaskOptions) (int64, error) {
+	f, err := os.Create(outPath)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	w := bufio.NewWriter(f)
+	defer w.Flush()
+
+	switch conn.Driver {
+	case "postgres":
+		return dumpPGTableInsertSQL(ctx, conn, et, w, t, opts)
+	case "mysql":
+		return dumpMySQLTableInsertSQL(ctx, conn, et, w, t, opts)
+	default:
+		return 0, fmt.Errorf("driver %s not supported", conn.Driver)
+	}
+}
+
+func dumpPGTableInsertSQL(ctx context.Context, conn *model.Connection, et exportTable, w *bufio.Writer, t *model.Task, opts exportTaskOptions) (int64, error) {
+	c := dbexec.WithDatabase(conn, et.Database)
+	pool, err := dbexec.AcquirePGPool(ctx, c)
+	if err != nil {
+		return 0, err
+	}
+	columnInfoByName, err := loadExportColumnInfoMap(ctx, c, et.Schema, et.Table)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := pool.Query(ctx, buildPGExportSelect(et, opts.Where))
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	fields := rows.FieldDescriptions()
+	cols := make([]string, len(fields))
+	pgInfos := make([]pgExportColumnInfo, len(fields))
+	exportInfos := make([]exportColumnInfo, len(fields))
+	for i, fd := range fields {
+		name := string(fd.Name)
+		cols[i] = name
+		exportInfo := columnInfoByName[name]
+		exportInfo.TypeOID = fd.DataTypeOID
+		exportInfos[i] = exportInfo
+		pgInfos[i] = pgExportColumnInfo{
+			TypeOID:      fd.DataTypeOID,
+			DefaultValue: exportInfo.DefaultValue,
+		}
+	}
+	if err := validateExportValueReplacementColumns(cols, opts.ValueReplacements); err != nil {
+		return 0, err
+	}
+
+	var n int64
+	for rows.Next() {
+		if n%500 == 0 {
+			if err := checkCancel(ctx, t.ID); err != nil {
+				return n, err
+			}
+		}
+		vals, err := rows.Values()
+		if err != nil {
+			return n, err
+		}
+		vals = applyExportValueReplacements(cols, vals, exportInfos, opts.ValueReplacements)
+		stmt, err := buildExportInsertSQLWithPGColumnInfo(et, cols, vals, pgInfos, opts.OnConflictDoNothing)
+		if err != nil {
+			return n, err
+		}
+		if _, err := w.WriteString(stmt + "\n"); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, rows.Err()
+}
+
+func loadExportColumnInfoMap(ctx context.Context, conn *model.Connection, schema, table string) (map[string]exportColumnInfo, error) {
+	cols, err := dbexec.ListColumns(ctx, conn, schema, table)
+	if err != nil {
+		return nil, fmt.Errorf("list columns: %w", err)
+	}
+	out := make(map[string]exportColumnInfo, len(cols))
+	for _, col := range cols {
+		info := exportColumnInfo{
+			DataType:      col.DataType,
+			Nullable:      col.Nullable,
+			AutoIncrement: col.AutoIncrement,
+		}
+		if col.DefaultValue != nil {
+			info.DefaultValue = *col.DefaultValue
+			info.HasDefault = strings.TrimSpace(*col.DefaultValue) != ""
+		}
+		out[col.Name] = info
+	}
+	return out, nil
+}
+
+func dumpMySQLTableInsertSQL(ctx context.Context, conn *model.Connection, et exportTable, w *bufio.Writer, t *model.Task, opts exportTaskOptions) (int64, error) {
+	c := dbexec.WithDatabase(conn, et.Database)
+	pool, err := dbexec.AcquireMySQLPool(ctx, c)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := pool.QueryContext(ctx, buildMySQLExportSelect(et, opts.Where))
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return 0, err
+	}
+	columnInfoByName, err := loadExportColumnInfoMap(ctx, c, et.Schema, et.Table)
+	if err != nil {
+		return 0, err
+	}
+	if err := validateExportValueReplacementColumns(cols, opts.ValueReplacements); err != nil {
+		return 0, err
+	}
+	exportInfos := exportColumnInfosForColumns(cols, columnInfoByName)
+	holders := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range holders {
+		ptrs[i] = &holders[i]
+	}
+
+	var n int64
+	for rows.Next() {
+		if n%500 == 0 {
+			if err := checkCancel(ctx, t.ID); err != nil {
+				return n, err
+			}
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return n, err
+		}
+		vals := applyExportValueReplacements(cols, holders, exportInfos, opts.ValueReplacements)
+		stmt, err := buildExportInsertSQL(conn.Driver, et, cols, vals, opts.OnConflictDoNothing)
+		if err != nil {
+			return n, err
+		}
+		if _, err := w.WriteString(stmt + "\n"); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, rows.Err()
+}
+
+func validateExportValueReplacementColumns(cols []string, rules []ExportValueReplacement) error {
+	if len(rules) == 0 {
+		return nil
+	}
+	colSet := make(map[string]struct{}, len(cols))
+	for _, col := range cols {
+		colSet[col] = struct{}{}
+	}
+	for _, rule := range rules {
+		if _, ok := colSet[rule.Column]; !ok {
+			return fmt.Errorf("value replacement column %q not found in exported table", rule.Column)
+		}
+	}
+	return nil
+}
+
+func exportColumnInfosForColumns(cols []string, columnInfoByName map[string]exportColumnInfo) []exportColumnInfo {
+	if len(cols) == 0 {
+		return nil
+	}
+	infos := make([]exportColumnInfo, len(cols))
+	for i, col := range cols {
+		infos[i] = columnInfoByName[col]
+	}
+	return infos
+}
+
+func applyExportValueReplacements(cols []string, vals []any, columnInfos []exportColumnInfo, rules []ExportValueReplacement) []any {
+	if len(rules) == 0 || len(cols) == 0 || len(vals) == 0 {
+		return vals
+	}
+	ruleByColumn := make(map[string]ExportValueReplacement, len(rules))
+	for _, rule := range rules {
+		ruleByColumn[rule.Column] = rule
+	}
+
+	var out []any
+	for i, col := range cols {
+		if i >= len(vals) {
+			break
+		}
+		rule, ok := ruleByColumn[col]
+		if !ok {
+			continue
+		}
+		if out == nil {
+			out = append([]any(nil), vals...)
+		}
+		key := exportReplacementKey(vals[i])
+		if mapped, ok := rule.Mapping[key]; ok {
+			out[i] = exportReplacementMappedValue(mapped, exportColumnInfoAt(columnInfos, i))
+			continue
+		}
+		if rule.OnMissing == exportReplacementOnMissingEmpty {
+			out[i] = exportMissingReplacementValue(exportColumnInfoAt(columnInfos, i))
+		}
+	}
+	if out == nil {
+		return vals
+	}
+	return out
+}
+
+func exportColumnInfoAt(infos []exportColumnInfo, i int) exportColumnInfo {
+	if infos == nil || i < 0 || i >= len(infos) {
+		return exportColumnInfo{}
+	}
+	return infos[i]
+}
+
+func exportMissingReplacementValue(info exportColumnInfo) any {
+	if info.Nullable {
+		return nil
+	}
+	if info.HasDefault || info.AutoIncrement {
+		return exportSQLDefault{}
+	}
+	return exportZeroValue(info)
+}
+
+func exportReplacementMappedValue(raw string, info exportColumnInfo) any {
+	if info.DataType == "" && info.TypeOID == 0 {
+		return raw
+	}
+
+	t := strings.ToLower(strings.TrimSpace(info.DataType))
+	base := normalizeExportDataType(t)
+	switch {
+	case isExportBoolType(t, base):
+		if v, ok := parseExportBool(raw); ok {
+			return v
+		}
+	case isExportFloatType(base):
+		if v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64); err == nil {
+			return v
+		}
+	case isExportNumericType(base):
+		if v, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64); err == nil {
+			return v
+		}
+		if v, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 64); err == nil {
+			return v
+		}
+	}
+	return raw
+}
+
+func parseExportBool(raw string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "true", "t", "1", "yes", "y", "on":
+		return true, true
+	case "false", "f", "0", "no", "n", "off":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func exportZeroValue(info exportColumnInfo) any {
+	t := strings.ToLower(strings.TrimSpace(info.DataType))
+	base := normalizeExportDataType(t)
+	switch {
+	case info.TypeOID == pgtype.UUIDOID || strings.Contains(base, "uuid"):
+		return "00000000-0000-0000-0000-000000000000"
+	case isPGJSONOID(info.TypeOID) || strings.Contains(base, "json"):
+		return "{}"
+	case strings.HasSuffix(t, "[]"):
+		return []any{}
+	case isExportBoolType(t, base):
+		return false
+	case isExportFloatType(base):
+		return float64(0)
+	case isExportNumericType(base):
+		return int64(0)
+	case isExportTimeType(base):
+		return time.Time{}
+	default:
+		return ""
+	}
+}
+
+func normalizeExportDataType(t string) string {
+	t = strings.ToLower(strings.TrimSpace(t))
+	if idx := strings.Index(t, "("); idx >= 0 {
+		t = t[:idx]
+	}
+	return strings.TrimSpace(t)
+}
+
+func isExportBoolType(raw, base string) bool {
+	return base == "bool" || base == "boolean" || raw == "tinyint(1)"
+}
+
+func isExportFloatType(t string) bool {
+	return t == "real" ||
+		t == "float" ||
+		t == "float4" ||
+		t == "float8" ||
+		t == "double" ||
+		t == "double precision"
+}
+
+func isExportNumericType(t string) bool {
+	return strings.Contains(t, "int") ||
+		t == "serial" ||
+		t == "bigserial" ||
+		t == "smallserial" ||
+		t == "numeric" ||
+		t == "decimal" ||
+		t == "number"
+}
+
+func isExportTimeType(t string) bool {
+	return strings.Contains(t, "date") ||
+		strings.Contains(t, "time")
+}
+
+func exportReplacementKey(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch x := v.(type) {
+	case string:
+		return x
+	case []byte:
+		return string(x)
+	case int:
+		return strconv.Itoa(x)
+	case int8:
+		return strconv.FormatInt(int64(x), 10)
+	case int16:
+		return strconv.FormatInt(int64(x), 10)
+	case int32:
+		return strconv.FormatInt(int64(x), 10)
+	case int64:
+		return strconv.FormatInt(x, 10)
+	case uint:
+		return strconv.FormatUint(uint64(x), 10)
+	case uint8:
+		return strconv.FormatUint(uint64(x), 10)
+	case uint16:
+		return strconv.FormatUint(uint64(x), 10)
+	case uint32:
+		return strconv.FormatUint(uint64(x), 10)
+	case uint64:
+		return strconv.FormatUint(x, 10)
+	case float32:
+		return strconv.FormatFloat(float64(x), 'f', -1, 32)
+	case float64:
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	case bool:
+		if x {
+			return "true"
+		}
+		return "false"
+	case time.Time:
+		return x.Format(time.RFC3339Nano)
+	default:
+		return fmt.Sprintf("%v", x)
+	}
+}
+
+func buildPGExportSelect(et exportTable, where string) string {
+	q := fmt.Sprintf(`SELECT * FROM %s.%s`, quotePGIdent(et.Schema), quotePGIdent(et.Table))
+	if where != "" {
+		q += " WHERE " + where
+	}
+	return q
+}
+
+func buildMySQLExportSelect(et exportTable, where string) string {
+	q := fmt.Sprintf("SELECT * FROM `%s`.`%s`", escapeMyIdent(et.Database), escapeMyIdent(et.Table))
+	if where != "" {
+		q += " WHERE " + where
+	}
+	return q
+}
+
+func buildExportInsertSQL(driver string, et exportTable, cols []string, vals []any, onConflictDoNothing bool) (string, error) {
+	return buildExportInsertSQLWithTypes(driver, et, cols, vals, nil, onConflictDoNothing)
+}
+
+func buildExportInsertSQLWithPGTypes(et exportTable, cols []string, vals []any, typeOIDs []uint32, onConflictDoNothing bool) (string, error) {
+	return buildExportInsertSQLWithTypes("postgres", et, cols, vals, pgInfosFromTypeOIDs(typeOIDs), onConflictDoNothing)
+}
+
+func buildExportInsertSQLWithPGColumnInfo(et exportTable, cols []string, vals []any, pgInfos []pgExportColumnInfo, onConflictDoNothing bool) (string, error) {
+	return buildExportInsertSQLWithTypes("postgres", et, cols, vals, pgInfos, onConflictDoNothing)
+}
+
+type pgExportColumnInfo struct {
+	TypeOID      uint32
+	DefaultValue string
+}
+
+type exportColumnInfo struct {
+	TypeOID       uint32
+	DataType      string
+	Nullable      bool
+	DefaultValue  string
+	HasDefault    bool
+	AutoIncrement bool
+}
+
+type exportSQLDefault struct{}
+
+func buildExportInsertSQLWithTypes(driver string, et exportTable, cols []string, vals []any, pgInfos []pgExportColumnInfo, onConflictDoNothing bool) (string, error) {
+	if len(cols) != len(vals) {
+		return "", fmt.Errorf("column/value length mismatch: %d columns, %d values", len(cols), len(vals))
+	}
+	if pgInfos != nil && len(pgInfos) != len(vals) {
+		return "", fmt.Errorf("type/value length mismatch: %d types, %d values", len(pgInfos), len(vals))
+	}
+
+	insertVerb := "INSERT INTO"
+	if driver == "mysql" && onConflictDoNothing {
+		insertVerb = "INSERT IGNORE INTO"
+	}
+
+	tableName := exportInsertTableName(driver, et)
+	if len(cols) == 0 {
+		if driver == "mysql" {
+			return fmt.Sprintf("%s %s () VALUES ();", insertVerb, tableName), nil
+		}
+		stmt := fmt.Sprintf("%s %s DEFAULT VALUES", insertVerb, tableName)
+		if driver == "postgres" && onConflictDoNothing {
+			stmt += " ON CONFLICT DO NOTHING"
+		}
+		return stmt + ";", nil
+	}
+
+	colList := strings.Join(quoteIdentifiers(cols, driver), ", ")
+	literals := make([]string, len(vals))
+	for i, v := range vals {
+		lit, err := sqlLiteralWithPGColumnInfo(v, driver, pgInfoAt(pgInfos, i))
+		if err != nil {
+			return "", err
+		}
+		literals[i] = lit
+	}
+
+	stmt := fmt.Sprintf("%s %s (%s) VALUES (%s)",
+		insertVerb, tableName, colList, strings.Join(literals, ", "))
+	if driver == "postgres" && onConflictDoNothing {
+		stmt += " ON CONFLICT DO NOTHING"
+	}
+	return stmt + ";", nil
+}
+
+func pgInfosFromTypeOIDs(typeOIDs []uint32) []pgExportColumnInfo {
+	if typeOIDs == nil {
+		return nil
+	}
+	infos := make([]pgExportColumnInfo, len(typeOIDs))
+	for i, oid := range typeOIDs {
+		infos[i] = pgExportColumnInfo{TypeOID: oid}
+	}
+	return infos
+}
+
+func pgInfoAt(infos []pgExportColumnInfo, i int) pgExportColumnInfo {
+	if infos == nil || i < 0 || i >= len(infos) {
+		return pgExportColumnInfo{}
+	}
+	return infos[i]
+}
+
+func exportInsertTableName(driver string, et exportTable) string {
+	if driver == "postgres" {
+		return quotePGIdent(et.Schema) + "." + quotePGIdent(et.Table)
+	}
+	return "`" + escapeMyIdent(et.Database) + "`.`" + escapeMyIdent(et.Table) + "`"
+}
+
+func sqlLiteral(v any, driver string) (string, error) {
+	return sqlLiteralWithPGColumnInfo(v, driver, pgExportColumnInfo{})
+}
+
+func sqlLiteralWithPGType(v any, driver string, pgTypeOID uint32) (string, error) {
+	return sqlLiteralWithPGColumnInfo(v, driver, pgExportColumnInfo{TypeOID: pgTypeOID})
+}
+
+func sqlLiteralWithPGColumnInfo(v any, driver string, pgInfo pgExportColumnInfo) (string, error) {
+	if v == nil {
+		return "NULL", nil
+	}
+	if _, ok := v.(exportSQLDefault); ok {
+		return "DEFAULT", nil
+	}
+	if driver == "postgres" && isPGJSONOID(pgInfo.TypeOID) {
+		return pgJSONLiteral(v, pgInfo)
+	}
+	if driver == "postgres" && pgInfo.TypeOID == pgtype.UUIDOID {
+		return pgUUIDLiteral(v)
+	}
+	switch x := v.(type) {
+	case string:
+		return quoteSQLString(x, driver)
+	case []byte:
+		return quoteSQLString(string(x), driver)
+	case []any:
+		return sqlArrayLiteral(x, driver)
+	case int:
+		return strconv.Itoa(x), nil
+	case int8:
+		return strconv.FormatInt(int64(x), 10), nil
+	case int16:
+		return strconv.FormatInt(int64(x), 10), nil
+	case int32:
+		return strconv.FormatInt(int64(x), 10), nil
+	case int64:
+		return strconv.FormatInt(x, 10), nil
+	case uint:
+		return strconv.FormatUint(uint64(x), 10), nil
+	case uint8:
+		return strconv.FormatUint(uint64(x), 10), nil
+	case uint16:
+		return strconv.FormatUint(uint64(x), 10), nil
+	case uint32:
+		return strconv.FormatUint(uint64(x), 10), nil
+	case uint64:
+		return strconv.FormatUint(x, 10), nil
+	case float32:
+		return strconv.FormatFloat(float64(x), 'f', -1, 32), nil
+	case float64:
+		return strconv.FormatFloat(x, 'f', -1, 64), nil
+	case bool:
+		if x {
+			return "TRUE", nil
+		}
+		return "FALSE", nil
+	case time.Time:
+		return quoteSQLString(x.Format(time.RFC3339Nano), driver)
+	default:
+		rv := reflect.ValueOf(v)
+		if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
+			return sqlArrayLiteralFromReflect(rv, driver)
+		}
+		return quoteSQLString(fmt.Sprintf("%v", x), driver)
+	}
+}
+
+func isPGJSONOID(oid uint32) bool {
+	return oid == pgtype.JSONOID || oid == pgtype.JSONBOID
+}
+
+func pgUUIDLiteral(v any) (string, error) {
+	switch x := v.(type) {
+	case string:
+		lit, err := quoteSQLString(x, "postgres")
+		if err != nil {
+			return "", err
+		}
+		return lit + "::uuid", nil
+	case []byte:
+		if len(x) == 16 {
+			return quoteUUIDBytes(x) + "::uuid", nil
+		}
+		lit, err := quoteSQLString(string(x), "postgres")
+		if err != nil {
+			return "", err
+		}
+		return lit + "::uuid", nil
+	case [16]byte:
+		return quoteUUIDBytes(x[:]) + "::uuid", nil
+	case pgtype.UUID:
+		if !x.Valid {
+			return "NULL", nil
+		}
+		return quoteUUIDBytes(x.Bytes[:]) + "::uuid", nil
+	default:
+		rv := reflect.ValueOf(v)
+		if rv.IsValid() && rv.Kind() == reflect.Array && rv.Len() == 16 && rv.Type().Elem().Kind() == reflect.Uint8 {
+			buf := make([]byte, 16)
+			for i := 0; i < 16; i++ {
+				buf[i] = byte(rv.Index(i).Uint())
+			}
+			return quoteUUIDBytes(buf) + "::uuid", nil
+		}
+		lit, err := quoteSQLString(fmt.Sprintf("%v", x), "postgres")
+		if err != nil {
+			return "", err
+		}
+		return lit + "::uuid", nil
+	}
+}
+
+func quoteUUIDBytes(b []byte) string {
+	var buf [36]byte
+	hex.Encode(buf[0:8], b[0:4])
+	buf[8] = '-'
+	hex.Encode(buf[9:13], b[4:6])
+	buf[13] = '-'
+	hex.Encode(buf[14:18], b[6:8])
+	buf[18] = '-'
+	hex.Encode(buf[19:23], b[8:10])
+	buf[23] = '-'
+	hex.Encode(buf[24:36], b[10:16])
+	return "'" + string(buf[:]) + "'"
+}
+
+func pgJSONLiteral(v any, pgInfo pgExportColumnInfo) (string, error) {
+	var raw string
+	switch x := v.(type) {
+	case string:
+		raw = x
+	case []byte:
+		raw = string(x)
+	default:
+		if isEmptyJSONMap(v) {
+			raw = jsonDefaultLiteral(pgInfo.DefaultValue)
+			if raw != "" {
+				break
+			}
+		}
+		b, err := json.Marshal(x)
+		if err != nil {
+			return "", fmt.Errorf("marshal json literal: %w", err)
+		}
+		raw = string(b)
+	}
+	if strings.TrimSpace(raw) == "" {
+		raw = jsonDefaultLiteral(pgInfo.DefaultValue)
+		if raw == "" {
+			raw = "{}"
+		}
+	}
+	lit, err := quoteSQLString(raw, "postgres")
+	if err != nil {
+		return "", err
+	}
+	if pgInfo.TypeOID == pgtype.JSONBOID {
+		return lit + "::jsonb", nil
+	}
+	return lit + "::json", nil
+}
+
+func isEmptyJSONMap(v any) bool {
+	rv := reflect.ValueOf(v)
+	return rv.IsValid() && rv.Kind() == reflect.Map && rv.Len() == 0
+}
+
+func jsonDefaultLiteral(defaultValue string) string {
+	s := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(defaultValue), " ", ""))
+	switch {
+	case strings.Contains(s, "'[]'::json") ||
+		strings.Contains(s, "'[]'::jsonb") ||
+		strings.Contains(s, "json_build_array(") ||
+		strings.Contains(s, "jsonb_build_array("):
+		return "[]"
+	case strings.Contains(s, "'{}'::json") ||
+		strings.Contains(s, "'{}'::jsonb") ||
+		strings.Contains(s, "json_build_object(") ||
+		strings.Contains(s, "jsonb_build_object("):
+		return "{}"
+	default:
+		return ""
+	}
+}
+
+func sqlArrayLiteral(values []any, driver string) (string, error) {
+	if driver != "postgres" {
+		return quoteSQLString(fmt.Sprintf("%v", values), driver)
+	}
+	if len(values) == 0 {
+		return "'{}'", nil
+	}
+	parts := make([]string, len(values))
+	for i, v := range values {
+		lit, err := sqlLiteral(v, driver)
+		if err != nil {
+			return "", err
+		}
+		parts[i] = lit
+	}
+	return "ARRAY[" + strings.Join(parts, ", ") + "]", nil
+}
+
+func sqlArrayLiteralFromReflect(rv reflect.Value, driver string) (string, error) {
+	if driver != "postgres" {
+		return quoteSQLString(fmt.Sprintf("%v", rv.Interface()), driver)
+	}
+	if rv.Len() == 0 {
+		return "'{}'", nil
+	}
+	parts := make([]string, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		lit, err := sqlLiteral(rv.Index(i).Interface(), driver)
+		if err != nil {
+			return "", err
+		}
+		parts[i] = lit
+	}
+	return "ARRAY[" + strings.Join(parts, ", ") + "]", nil
+}
+
+func quoteSQLString(s, driver string) (string, error) {
+	if driver == "postgres" && strings.ContainsRune(s, 0) {
+		return "", errors.New("postgres string literal cannot contain NUL byte")
+	}
+	if driver == "mysql" {
+		replacer := strings.NewReplacer(
+			"\\", "\\\\",
+			"'", "\\'",
+			"\x00", `\0`,
+			"\n", `\n`,
+			"\r", `\r`,
+			"\x1a", `\Z`,
+		)
+		return "'" + replacer.Replace(s) + "'", nil
+	}
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'", nil
 }
 
 // loadConnection 解 connID → *model.Connection（不做权限校验，handler 已校验）。
@@ -432,6 +1197,13 @@ func runDataSyncTask(ctx context.Context, t *model.Task) error {
 	if err := assertSyncDriversSupported(srcConn, destConn); err != nil {
 		return err
 	}
+	opts, err := parseDataSyncTaskOptions(t.Params)
+	if err != nil {
+		return err
+	}
+	if (opts.Where != "" || len(opts.ValueReplacements) > 0) && t.Scope != model.TaskScopeTable {
+		return errors.New("data sync filters and value replacements are only supported for scope=table")
+	}
 
 	pairs, err := resolveSyncTablePairs(ctx, srcConn, t)
 	if err != nil {
@@ -441,6 +1213,11 @@ func runDataSyncTask(ctx context.Context, t *model.Task) error {
 		return errors.New("no tables to sync")
 	}
 
+	taskDir := filepath.Join(taskArtifactDir, fmt.Sprintf("%d", t.ID))
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir artifact: %w", err)
+	}
+
 	if err := updateTaskFields(t.ID, map[string]any{
 		"total_tables": len(pairs),
 		"done_tables":  0,
@@ -448,31 +1225,72 @@ func runDataSyncTask(ctx context.Context, t *model.Task) error {
 		return err
 	}
 
-	var grandTotal int64
+	outFiles := make([]string, 0, len(pairs))
+	var grand syncDataResult
 	for i, p := range pairs {
 		if err := checkCancel(ctx, t.ID); err != nil {
 			return err
 		}
-		rows, err := syncOneTableData(ctx, srcConn, destConn, t, p)
+		fname := safeFileName(fmt.Sprintf("%s.%s.%s-to-%s.%s.%s.sql",
+			p.SrcDatabase, p.SrcSchema, p.SrcTable,
+			p.DestDatabase, p.DestSchema, p.DestTable))
+		fpath := filepath.Join(taskDir, fname)
+		result, err := syncOneTableData(ctx, srcConn, destConn, t, p, opts, fpath)
 		if err != nil {
 			return fmt.Errorf("sync %s.%s.%s -> %s.%s.%s: %w",
 				p.SrcDatabase, p.SrcSchema, p.SrcTable,
 				p.DestDatabase, p.DestSchema, p.DestTable, err)
 		}
-		grandTotal += rows
+		outFiles = append(outFiles, fpath)
+		grand = grand.add(result)
 		prog := int(float64(i+1) / float64(len(pairs)) * 100)
 		_ = updateTaskFields(t.ID, map[string]any{
 			"done_tables":    i + 1,
-			"processed_rows": grandTotal,
-			"total_rows":     grandTotal,
+			"processed_rows": grand.SuccessRows,
+			"failed_rows":    grand.FailedRows,
+			"total_rows":     grand.SourceRows,
 			"progress":       prog,
 		})
 	}
 
+	finalPath, finalSize, err := finalizeTaskArtifacts(taskDir, fmt.Sprintf("data-sync-%d.zip", t.ID), outFiles)
+	if err != nil {
+		return err
+	}
+
 	return updateTaskFields(t.ID, map[string]any{
-		"processed_rows": grandTotal,
-		"total_rows":     grandTotal,
+		"file_path":      finalPath,
+		"file_size":      finalSize,
+		"processed_rows": grand.SuccessRows,
+		"failed_rows":    grand.FailedRows,
+		"total_rows":     grand.SourceRows,
 	})
+}
+
+func finalizeTaskArtifacts(taskDir, zipName string, outFiles []string) (string, int64, error) {
+	if len(outFiles) == 0 {
+		return "", 0, nil
+	}
+	if len(outFiles) == 1 {
+		info, err := os.Stat(outFiles[0])
+		if err != nil {
+			return "", 0, fmt.Errorf("stat artifact: %w", err)
+		}
+		return outFiles[0], info.Size(), nil
+	}
+
+	zipPath := filepath.Join(taskDir, zipName)
+	if err := zipFiles(zipPath, outFiles); err != nil {
+		return "", 0, fmt.Errorf("zip artifacts: %w", err)
+	}
+	for _, f := range outFiles {
+		_ = os.Remove(f)
+	}
+	info, err := os.Stat(zipPath)
+	if err != nil {
+		return "", 0, fmt.Errorf("stat artifact zip: %w", err)
+	}
+	return zipPath, info.Size(), nil
 }
 
 // syncTablePair 描述一次"源表 → 目标表"的对应关系。
@@ -527,14 +1345,14 @@ func assertSyncDriversSupported(srcConn, destConn *model.Connection) error {
 // syncOneTableData 同步单张表的数据：
 //   - 读取源/目标列；目标表不存在时先按源表结构建表（含主键 + 索引）
 //   - 按列名取交集做 INSERT
-func syncOneTableData(ctx context.Context, srcConn, destConn *model.Connection, t *model.Task, p syncTablePair) (int64, error) {
+func syncOneTableData(ctx context.Context, srcConn, destConn *model.Connection, t *model.Task, p syncTablePair, opts dataSyncTaskOptions, artifactPath string) (syncDataResult, error) {
 	srcC := dbexec.WithDatabase(srcConn, p.SrcDatabase)
 	srcCols, err := dbexec.ListColumns(ctx, srcC, p.SrcSchema, p.SrcTable)
 	if err != nil {
-		return 0, fmt.Errorf("list source columns: %w", err)
+		return syncDataResult{}, fmt.Errorf("list source columns: %w", err)
 	}
 	if len(srcCols) == 0 {
-		return 0, errors.New("source table has no columns")
+		return syncDataResult{}, errors.New("source table has no columns")
 	}
 
 	destC := dbexec.WithDatabase(destConn, p.DestDatabase)
@@ -544,33 +1362,165 @@ func syncOneTableData(ctx context.Context, srcConn, destConn *model.Connection, 
 		if isMissingTableErr(err) {
 			srcIdx, _ := dbexec.ListIndexes(ctx, srcC, p.SrcSchema, p.SrcTable)
 			if cerr := createDestTableFromSrc(ctx, destConn, p, srcCols, srcIdx); cerr != nil {
-				return 0, fmt.Errorf("auto-create dest table: %w", cerr)
+				return syncDataResult{}, fmt.Errorf("auto-create dest table: %w", cerr)
 			}
 			destCols, err = dbexec.ListColumns(ctx, destC, p.DestSchema, p.DestTable)
 			if err != nil {
-				return 0, fmt.Errorf("list destination columns after create: %w", err)
+				return syncDataResult{}, fmt.Errorf("list destination columns after create: %w", err)
 			}
 		} else {
-			return 0, fmt.Errorf("list destination columns: %w", err)
+			return syncDataResult{}, fmt.Errorf("list destination columns: %w", err)
 		}
 	}
 	if len(destCols) == 0 {
-		return 0, errors.New("destination table has no columns")
+		return syncDataResult{}, errors.New("destination table has no columns")
 	}
 
 	matched := matchColumnNames(srcCols, destCols)
 	if len(matched) == 0 {
-		return 0, errors.New("no matching columns between source and destination")
+		return syncDataResult{}, errors.New("no matching columns between source and destination")
 	}
+	if err := validateExportValueReplacementColumns(matched, opts.ValueReplacements); err != nil {
+		return syncDataResult{}, err
+	}
+	destInfoByName := exportColumnInfoMapFromDBColumns(destCols)
+	destInfos := exportColumnInfosForColumns(matched, destInfoByName)
+	artifact, err := newSyncSQLArtifactWriter(destConn.Driver, p, matched, destInfos, artifactPath)
+	if err != nil {
+		return syncDataResult{}, err
+	}
+	defer artifact.Close()
 
 	switch srcConn.Driver {
 	case "postgres":
-		return syncDataFromPG(ctx, srcConn, destConn, t, p, matched)
+		return syncDataFromPG(ctx, srcConn, destConn, t, p, matched, destInfos, opts, artifact)
 	case "mysql":
-		return syncDataFromMySQL(ctx, srcConn, destConn, t, p, matched)
+		return syncDataFromMySQL(ctx, srcConn, destConn, t, p, matched, destInfos, opts, artifact)
 	default:
-		return 0, errUnsupportedDriver
+		return syncDataResult{}, errUnsupportedDriver
 	}
+}
+
+func exportColumnInfoMapFromDBColumns(cols []dbexec.ColumnInfo) map[string]exportColumnInfo {
+	out := make(map[string]exportColumnInfo, len(cols))
+	for _, col := range cols {
+		info := exportColumnInfo{
+			DataType:      col.DataType,
+			Nullable:      col.Nullable,
+			AutoIncrement: col.AutoIncrement,
+		}
+		if col.DefaultValue != nil {
+			info.DefaultValue = *col.DefaultValue
+			info.HasDefault = strings.TrimSpace(*col.DefaultValue) != ""
+		}
+		out[col.Name] = info
+	}
+	return out
+}
+
+type syncSQLArtifactWriter struct {
+	driver string
+	table  exportTable
+	cols   []string
+	infos  []exportColumnInfo
+	file   *os.File
+	writer *bufio.Writer
+}
+
+func newSyncSQLArtifactWriter(driver string, p syncTablePair, cols []string, infos []exportColumnInfo, outPath string) (*syncSQLArtifactWriter, error) {
+	f, err := os.Create(outPath)
+	if err != nil {
+		return nil, fmt.Errorf("create sync sql artifact: %w", err)
+	}
+	return &syncSQLArtifactWriter{
+		driver: driver,
+		table: exportTable{
+			Database: p.DestDatabase,
+			Schema:   p.DestSchema,
+			Table:    p.DestTable,
+		},
+		cols:   append([]string(nil), cols...),
+		infos:  append([]exportColumnInfo(nil), infos...),
+		file:   f,
+		writer: bufio.NewWriter(f),
+	}, nil
+}
+
+func (w *syncSQLArtifactWriter) WriteRow(vals []any) error {
+	if w == nil {
+		return nil
+	}
+	stmt, err := buildSyncArtifactInsertSQL(w.driver, w.table, w.cols, vals, w.infos)
+	if err != nil {
+		return err
+	}
+	_, err = w.writer.WriteString(stmt + "\n")
+	return err
+}
+
+func (w *syncSQLArtifactWriter) Close() error {
+	if w == nil {
+		return nil
+	}
+	flushErr := w.writer.Flush()
+	closeErr := w.file.Close()
+	if flushErr != nil {
+		return flushErr
+	}
+	return closeErr
+}
+
+func buildSyncArtifactInsertSQL(driver string, et exportTable, cols []string, vals []any, infos []exportColumnInfo) (string, error) {
+	if len(cols) != len(vals) {
+		return "", fmt.Errorf("column/value length mismatch: %d columns, %d values", len(cols), len(vals))
+	}
+
+	insertVerb := "INSERT INTO"
+	if driver == "mysql" {
+		insertVerb = "INSERT IGNORE INTO"
+	}
+	colList := strings.Join(quoteIdentifiers(cols, driver), ", ")
+	literals := make([]string, len(vals))
+	for i, v := range vals {
+		lit, err := syncSQLLiteral(v, driver, exportColumnInfoAt(infos, i))
+		if err != nil {
+			return "", err
+		}
+		literals[i] = lit
+	}
+
+	stmt := fmt.Sprintf("%s %s (%s) VALUES (%s)",
+		insertVerb, exportInsertTableName(driver, et), colList, strings.Join(literals, ", "))
+	if driver == "postgres" {
+		stmt += " ON CONFLICT DO NOTHING"
+	}
+	return stmt + ";", nil
+}
+
+func syncSQLLiteral(v any, driver string, info exportColumnInfo) (string, error) {
+	if driver == "postgres" {
+		t := normalizeExportDataType(info.DataType)
+		switch {
+		case info.TypeOID == pgtype.UUIDOID || strings.Contains(t, "uuid"):
+			return pgUUIDLiteral(v)
+		case isPGJSONOID(info.TypeOID) || strings.Contains(t, "json"):
+			return pgJSONLiteral(v, pgExportColumnInfo{
+				TypeOID:      inferredPGJSONOID(info),
+				DefaultValue: info.DefaultValue,
+			})
+		}
+	}
+	return sqlLiteral(v, driver)
+}
+
+func inferredPGJSONOID(info exportColumnInfo) uint32 {
+	if isPGJSONOID(info.TypeOID) {
+		return info.TypeOID
+	}
+	if strings.Contains(normalizeExportDataType(info.DataType), "jsonb") {
+		return pgtype.JSONBOID
+	}
+	return pgtype.JSONOID
 }
 
 // matchColumnNames 取源列与目标列的交集，保留源列顺序。
@@ -602,74 +1552,91 @@ func isMissingTableErr(err error) bool {
 }
 
 // syncDataFromPG 从 PostgreSQL 源表同步数据到目标表。
-func syncDataFromPG(ctx context.Context, srcConn, destConn *model.Connection, t *model.Task, p syncTablePair, cols []string) (int64, error) {
+func syncDataFromPG(ctx context.Context, srcConn, destConn *model.Connection, t *model.Task, p syncTablePair, cols []string, destInfos []exportColumnInfo, opts dataSyncTaskOptions, artifact *syncSQLArtifactWriter) (syncDataResult, error) {
 	srcC := dbexec.WithDatabase(srcConn, p.SrcDatabase)
 	pool, err := dbexec.AcquirePGPool(ctx, srcC)
 	if err != nil {
-		return 0, fmt.Errorf("acquire source pool: %w", err)
+		return syncDataResult{}, fmt.Errorf("acquire source pool: %w", err)
 	}
 
 	colList := strings.Join(quoteIdentifiers(cols, srcConn.Driver), ", ")
 	q := fmt.Sprintf("SELECT %s FROM %s.%s", colList, quotePGIdent(p.SrcSchema), quotePGIdent(p.SrcTable))
+	if opts.Where != "" {
+		q += " WHERE " + opts.Where
+	}
 	rows, err := pool.Query(ctx, q)
 	if err != nil {
-		return 0, fmt.Errorf("query source: %w", err)
+		return syncDataResult{}, fmt.Errorf("query source: %w", err)
 	}
 	defer rows.Close()
 
-	var totalRows int64
+	var result syncDataResult
 	batch := make([][]any, 0, batchSize)
 
 	for rows.Next() {
-		if totalRows%500 == 0 {
+		if result.SourceRows%500 == 0 {
 			if err := checkCancel(ctx, t.ID); err != nil {
-				return totalRows, err
+				return result, err
 			}
 		}
 
 		vals, err := rows.Values()
 		if err != nil {
-			return totalRows, fmt.Errorf("scan row: %w", err)
+			return result, fmt.Errorf("scan row: %w", err)
+		}
+		vals = applyExportValueReplacements(cols, vals, destInfos, opts.ValueReplacements)
+		if err := artifact.WriteRow(vals); err != nil {
+			return result, fmt.Errorf("write sync sql artifact: %w", err)
 		}
 		batch = append(batch, vals)
+		result.SourceRows++
 
 		if len(batch) >= batchSize {
-			if err := insertBatch(ctx, destConn, p, cols, batch); err != nil {
-				return totalRows, fmt.Errorf("insert batch: %w", err)
+			affected, err := insertBatch(ctx, destConn, p, cols, batch)
+			if err != nil {
+				return result, fmt.Errorf("insert batch: %w", err)
 			}
-			totalRows += int64(len(batch))
+			result.SuccessRows += affected
+			result.FailedRows += int64(len(batch)) - affected
 			batch = batch[:0]
 
 			_ = updateTaskFields(t.ID, map[string]any{
-				"processed_rows": totalRows,
+				"processed_rows": result.SuccessRows,
+				"failed_rows":    result.FailedRows,
+				"total_rows":     result.SourceRows,
 			})
 		}
 	}
 
 	// 插入剩余数据
 	if len(batch) > 0 {
-		if err := insertBatch(ctx, destConn, p, cols, batch); err != nil {
-			return totalRows, fmt.Errorf("insert final batch: %w", err)
+		affected, err := insertBatch(ctx, destConn, p, cols, batch)
+		if err != nil {
+			return result, fmt.Errorf("insert final batch: %w", err)
 		}
-		totalRows += int64(len(batch))
+		result.SuccessRows += affected
+		result.FailedRows += int64(len(batch)) - affected
 	}
 
-	return totalRows, rows.Err()
+	return result, rows.Err()
 }
 
 // syncDataFromMySQL 从 MySQL 源表同步数据到目标表。
-func syncDataFromMySQL(ctx context.Context, srcConn, destConn *model.Connection, t *model.Task, p syncTablePair, cols []string) (int64, error) {
+func syncDataFromMySQL(ctx context.Context, srcConn, destConn *model.Connection, t *model.Task, p syncTablePair, cols []string, destInfos []exportColumnInfo, opts dataSyncTaskOptions, artifact *syncSQLArtifactWriter) (syncDataResult, error) {
 	srcC := dbexec.WithDatabase(srcConn, p.SrcDatabase)
 	pool, err := dbexec.AcquireMySQLPool(ctx, srcC)
 	if err != nil {
-		return 0, fmt.Errorf("acquire source pool: %w", err)
+		return syncDataResult{}, fmt.Errorf("acquire source pool: %w", err)
 	}
 
 	colList := strings.Join(quoteIdentifiers(cols, srcConn.Driver), ", ")
 	q := fmt.Sprintf("SELECT %s FROM `%s`.`%s`", colList, escapeMyIdent(p.SrcDatabase), escapeMyIdent(p.SrcTable))
+	if opts.Where != "" {
+		q += " WHERE " + opts.Where
+	}
 	rows, err := pool.QueryContext(ctx, q)
 	if err != nil {
-		return 0, fmt.Errorf("query source: %w", err)
+		return syncDataResult{}, fmt.Errorf("query source: %w", err)
 	}
 	defer rows.Close()
 
@@ -679,51 +1646,62 @@ func syncDataFromMySQL(ctx context.Context, srcConn, destConn *model.Connection,
 		ptrs[i] = &holders[i]
 	}
 
-	var totalRows int64
+	var result syncDataResult
 	batch := make([][]any, 0, batchSize)
 
 	for rows.Next() {
-		if totalRows%500 == 0 {
+		if result.SourceRows%500 == 0 {
 			if err := checkCancel(ctx, t.ID); err != nil {
-				return totalRows, err
+				return result, err
 			}
 		}
 
 		if err := rows.Scan(ptrs...); err != nil {
-			return totalRows, fmt.Errorf("scan row: %w", err)
+			return result, fmt.Errorf("scan row: %w", err)
 		}
 
 		vals := make([]any, len(holders))
 		copy(vals, holders)
+		vals = applyExportValueReplacements(cols, vals, destInfos, opts.ValueReplacements)
+		if err := artifact.WriteRow(vals); err != nil {
+			return result, fmt.Errorf("write sync sql artifact: %w", err)
+		}
 		batch = append(batch, vals)
+		result.SourceRows++
 
 		if len(batch) >= batchSize {
-			if err := insertBatch(ctx, destConn, p, cols, batch); err != nil {
-				return totalRows, fmt.Errorf("insert batch: %w", err)
+			affected, err := insertBatch(ctx, destConn, p, cols, batch)
+			if err != nil {
+				return result, fmt.Errorf("insert batch: %w", err)
 			}
-			totalRows += int64(len(batch))
+			result.SuccessRows += affected
+			result.FailedRows += int64(len(batch)) - affected
 			batch = batch[:0]
 
 			_ = updateTaskFields(t.ID, map[string]any{
-				"processed_rows": totalRows,
+				"processed_rows": result.SuccessRows,
+				"failed_rows":    result.FailedRows,
+				"total_rows":     result.SourceRows,
 			})
 		}
 	}
 
 	if len(batch) > 0 {
-		if err := insertBatch(ctx, destConn, p, cols, batch); err != nil {
-			return totalRows, fmt.Errorf("insert final batch: %w", err)
+		affected, err := insertBatch(ctx, destConn, p, cols, batch)
+		if err != nil {
+			return result, fmt.Errorf("insert final batch: %w", err)
 		}
-		totalRows += int64(len(batch))
+		result.SuccessRows += affected
+		result.FailedRows += int64(len(batch)) - affected
 	}
 
-	return totalRows, rows.Err()
+	return result, rows.Err()
 }
 
-// insertBatch 批量插入数据到目标表。
-func insertBatch(ctx context.Context, destConn *model.Connection, p syncTablePair, cols []string, batch [][]any) error {
+// insertBatch 批量插入数据到目标表，返回目标库实际写入的行数。
+func insertBatch(ctx context.Context, destConn *model.Connection, p syncTablePair, cols []string, batch [][]any) (int64, error) {
 	if len(batch) == 0 {
-		return nil
+		return 0, nil
 	}
 
 	destC := dbexec.WithDatabase(destConn, p.DestDatabase)
@@ -735,20 +1713,23 @@ func insertBatch(ctx context.Context, destConn *model.Connection, p syncTablePai
 	case "mysql":
 		return insertBatchMySQL(ctx, destC, p, colList, batch, len(cols))
 	default:
-		return errUnsupportedDriver
+		return 0, errUnsupportedDriver
 	}
 }
 
 // insertBatchPG 批量插入到 PostgreSQL。
-func insertBatchPG(ctx context.Context, destC *model.Connection, p syncTablePair, colList string, batch [][]any, colCount int) error {
+func insertBatchPG(ctx context.Context, destC *model.Connection, p syncTablePair, colList string, batch [][]any, colCount int) (int64, error) {
 	pool, err := dbexec.AcquirePGPool(ctx, destC)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	q, args := buildPGBatchInsert(p, colList, batch, colCount)
-	_, err = pool.Exec(ctx, q, args...)
-	return err
+	tag, err := pool.Exec(ctx, q, args...)
+	if err == nil {
+		return tag.RowsAffected(), nil
+	}
+	return insertRowsPGIndividually(ctx, pool, p, colList, batch, colCount)
 }
 
 func buildPGBatchInsert(p syncTablePair, colList string, batch [][]any, colCount int) (string, []any) {
@@ -757,10 +1738,14 @@ func buildPGBatchInsert(p syncTablePair, colList string, batch [][]any, colCount
 	for i, row := range batch {
 		rowPlaceholders := make([]string, colCount)
 		for j := 0; j < colCount; j++ {
-			rowPlaceholders[j] = fmt.Sprintf("$%d", i*colCount+j+1)
+			if _, ok := row[j].(exportSQLDefault); ok {
+				rowPlaceholders[j] = "DEFAULT"
+				continue
+			}
+			args = append(args, row[j])
+			rowPlaceholders[j] = fmt.Sprintf("$%d", len(args))
 		}
 		placeholders[i] = "(" + strings.Join(rowPlaceholders, ", ") + ")"
-		args = append(args, row...)
 	}
 
 	// 使用 ON CONFLICT DO NOTHING 跳过主键/唯一约束冲突
@@ -769,30 +1754,50 @@ func buildPGBatchInsert(p syncTablePair, colList string, batch [][]any, colCount
 	return q, args
 }
 
+func insertRowsPGIndividually(ctx context.Context, pool interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}, p syncTablePair, colList string, batch [][]any, colCount int) (int64, error) {
+	var affected int64
+	for _, row := range batch {
+		q, args := buildPGBatchInsert(p, colList, [][]any{row}, colCount)
+		tag, err := pool.Exec(ctx, q, args...)
+		if err != nil {
+			continue
+		}
+		affected += tag.RowsAffected()
+	}
+	return affected, nil
+}
+
 // insertBatchMySQL 批量插入到 MySQL。
-func insertBatchMySQL(ctx context.Context, destC *model.Connection, p syncTablePair, colList string, batch [][]any, colCount int) error {
+func insertBatchMySQL(ctx context.Context, destC *model.Connection, p syncTablePair, colList string, batch [][]any, colCount int) (int64, error) {
 	pool, err := dbexec.AcquireMySQLPool(ctx, destC)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	q, args := buildMySQLBatchInsert(p, colList, batch, colCount)
-	if _, err := pool.ExecContext(ctx, q, args...); err == nil {
-		return nil
-	} else if !isMySQLDuplicateKeyErr(err) {
-		return err
+	if res, err := pool.ExecContext(ctx, q, args...); err == nil {
+		return res.RowsAffected()
 	}
 
-	singleQ := buildMySQLSingleInsert(p, colList, colCount)
+	var affected int64
 	for _, row := range batch {
-		if _, err := pool.ExecContext(ctx, singleQ, row...); err != nil {
+		singleQ, singleArgs := buildMySQLSingleInsert(p, colList, row, colCount)
+		res, err := pool.ExecContext(ctx, singleQ, singleArgs...)
+		if err != nil {
 			if isMySQLDuplicateKeyErr(err) {
 				continue
 			}
-			return err
+			continue
 		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return affected, err
+		}
+		affected += n
 	}
-	return nil
+	return affected, nil
 }
 
 func buildMySQLBatchInsert(p syncTablePair, colList string, batch [][]any, colCount int) (string, []any) {
@@ -801,10 +1806,14 @@ func buildMySQLBatchInsert(p syncTablePair, colList string, batch [][]any, colCo
 	for i, row := range batch {
 		rowPlaceholders := make([]string, colCount)
 		for j := 0; j < colCount; j++ {
+			if _, ok := row[j].(exportSQLDefault); ok {
+				rowPlaceholders[j] = "DEFAULT"
+				continue
+			}
 			rowPlaceholders[j] = "?"
+			args = append(args, row[j])
 		}
 		placeholders[i] = "(" + strings.Join(rowPlaceholders, ", ") + ")"
-		args = append(args, row...)
 	}
 
 	q := fmt.Sprintf("INSERT INTO `%s`.`%s` (%s) VALUES %s",
@@ -812,13 +1821,19 @@ func buildMySQLBatchInsert(p syncTablePair, colList string, batch [][]any, colCo
 	return q, args
 }
 
-func buildMySQLSingleInsert(p syncTablePair, colList string, colCount int) string {
+func buildMySQLSingleInsert(p syncTablePair, colList string, row []any, colCount int) (string, []any) {
 	rowPlaceholders := make([]string, colCount)
+	args := make([]any, 0, colCount)
 	for i := 0; i < colCount; i++ {
+		if _, ok := row[i].(exportSQLDefault); ok {
+			rowPlaceholders[i] = "DEFAULT"
+			continue
+		}
 		rowPlaceholders[i] = "?"
+		args = append(args, row[i])
 	}
 	return fmt.Sprintf("INSERT INTO `%s`.`%s` (%s) VALUES (%s)",
-		escapeMyIdent(p.DestDatabase), escapeMyIdent(p.DestTable), colList, strings.Join(rowPlaceholders, ", "))
+		escapeMyIdent(p.DestDatabase), escapeMyIdent(p.DestTable), colList, strings.Join(rowPlaceholders, ", ")), args
 }
 
 func isMySQLDuplicateKeyErr(err error) bool {
