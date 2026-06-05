@@ -257,7 +257,7 @@ export default function TaskListModal({ open, groups, onClose }: Props) {
       {
         title: "进度",
         dataIndex: "progress",
-        width: 160,
+        width: 130,
         render: (p: number, row: Task) => {
           const status: any =
             row.status === "failed"
@@ -278,6 +278,23 @@ export default function TaskListModal({ open, groups, onClose }: Props) {
               <Progress percent={p ?? 0} size="small" status={status} />
             </Tooltip>
           );
+        },
+      },
+      {
+        title: "结果",
+        width: 180,
+        render: (_: any, row: Task) => {
+          if (row.kind === "data_sync") {
+            const failed = row.failed_rows ?? 0;
+            return (
+              <Tooltip title={`源行数 ${row.total_rows ?? 0}，成功 ${row.processed_rows ?? 0}，失败/跳过 ${failed}`}>
+                <span style={{ fontSize: 12 }}>
+                  成功 {row.processed_rows ?? 0} / 失败 {failed}
+                </span>
+              </Tooltip>
+            );
+          }
+          return <span>{row.processed_rows ?? 0} 行</span>;
         },
       },
       { title: "创建人", dataIndex: "creator_name", width: 120, ellipsis: true },

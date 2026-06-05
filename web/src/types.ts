@@ -209,6 +209,7 @@ export interface Task {
   status: TaskStatus;
   progress: number;
   processed_rows: number;
+  failed_rows: number;
   total_rows: number;
   total_tables: number;
   done_tables: number;
