@@ -107,14 +107,14 @@ func querySavedQueries(where string, args []any) ([]SavedQueryView, error) {
 		UpdatedAt      string
 		GroupName      string
 		ConnectionName string
-		Database       string
+		Database       string `gorm:"column:connection_database"`
 		CreatedByName  string
 	}
-	q := db.Meta().Table("saved_queries AS sq").
-		Select("sq.id, sq.group_id, sq.connection_id, sq.title, sq.description, sq.sql, sq.created_by_id, sq.created_at, sq.updated_at, g.name AS group_name, c.name AS connection_name, c.database AS database, u.name AS created_by_name").
-		Joins("JOIN groups g ON g.id = sq.group_id").
-		Joins("JOIN connections c ON c.id = sq.connection_id").
-		Joins("JOIN users u ON u.id = sq.created_by_id").
+	q := db.Meta().Table(metaTable("saved_queries", "sq")).
+		Select("sq.id, sq.group_id, sq.connection_id, sq.title, sq.description, sq.sql, sq.created_by_id, sq.created_at, sq.updated_at, g.name AS group_name, c.name AS connection_name, "+metaCol("c", "database")+" AS connection_database, u.name AS created_by_name").
+		Joins("JOIN "+metaTable("groups", "g")+" ON g.id = sq.group_id").
+		Joins("JOIN "+metaTable("connections", "c")+" ON c.id = sq.connection_id").
+		Joins("JOIN "+metaTable("users", "u")+" ON u.id = sq.created_by_id").
 		Where(where, args...).
 		Order("sq.created_at DESC")
 	if err := q.Scan(&rows).Error; err != nil {

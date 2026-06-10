@@ -80,10 +80,10 @@ func FindSharedLLMOwner(userID uint) (*model.User, error) {
 	// 通过 JOIN groups + group_members 找出"用户所在组"并且"组开启了 share_llm"
 	// 的 Owner，再要求 Owner 的 LLM 配置齐全。
 	err := db.Meta().
-		Table("users AS u").
+		Table(metaTable("users", "u")).
 		Select("u.*").
-		Joins("JOIN groups g ON g.owner_id = u.id").
-		Joins("JOIN group_members gm ON gm.group_id = g.id").
+		Joins("JOIN "+metaTable("groups", "g")+" ON g.owner_id = u.id").
+		Joins("JOIN "+metaTable("group_members", "gm")+" ON gm.group_id = g.id").
 		Where("gm.user_id = ? AND g.share_llm = ? AND u.llm_endpoint <> '' AND u.llm_model <> '' AND u.llm_api_key_enc <> ''", userID, true).
 		Order("g.id").
 		Limit(1).

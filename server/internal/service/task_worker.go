@@ -14,11 +14,11 @@ import (
 const taskQueueCapacity = 256
 
 var (
-	taskQueue           chan uint
-	taskWG              sync.WaitGroup
-	taskOnce            sync.Once
-	taskCancel          context.CancelFunc
-	taskDroppedTotal    int64
+	taskQueue        chan uint
+	taskWG           sync.WaitGroup
+	taskOnce         sync.Once
+	taskCancel       context.CancelFunc
+	taskDroppedTotal int64
 
 	// taskRunningCancels 记录运行中任务的 ctx cancel，供未来扩展硬取消。
 	// 当前 worker 是单 goroutine 串行执行，最多 1 个条目，但用 map 保留扩展性。
@@ -147,6 +147,8 @@ func processTask(id uint) {
 		runErr = runDataSyncTask(ctx, t)
 	case model.TaskKindSchemaSync:
 		runErr = runSchemaSyncTask(ctx, t)
+	case model.TaskKindBackup:
+		runErr = runBackupTask(ctx, t)
 	default:
 		runErr = errUnknownKind
 	}

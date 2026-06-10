@@ -217,9 +217,9 @@ func ListMembers(actorID, groupID uint) ([]MemberView, error) {
 		Name   string
 		Role   model.Role
 	}
-	err := db.Meta().Table("group_members AS gm").
+	err := db.Meta().Table(metaTable("group_members", "gm")).
 		Select("gm.user_id, u.email, u.name, gm.role").
-		Joins("JOIN users u ON u.id = gm.user_id").
+		Joins("JOIN "+metaTable("users", "u")+" ON u.id = gm.user_id").
 		Where("gm.group_id = ?", groupID).
 		Scan(&rows).Error
 	if err != nil {

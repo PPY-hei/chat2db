@@ -192,6 +192,133 @@ func resolveExportTables(ctx context.Context, conn *model.Connection, t *model.T
 	}
 }
 
+func runBackupTask(ctx context.Context, t *model.Task) error {
+	if t.Scope != model.TaskScopeTable {
+		return errors.New("backup task only supports scope=table")
+	}
+	conn, err := loadConnection(t.ConnID)
+	if err != nil {
+		return fmt.Errorf("load connection: %w", err)
+	}
+	opts, err := parseBackupTaskOptions(t.Params)
+	if err != nil {
+		return err
+	}
+	src := exportTable{
+		Database: t.TargetDatabase,
+		Schema:   t.TargetSchema,
+		Table:    t.TargetTable,
+	}
+	if src.Database == "" || src.Table == "" {
+		return errors.New("backup task requires source database and table")
+	}
+	destTable := opts.BackupTable
+	if destTable == "" {
+		destTable = t.DestTable
+	}
+	if destTable == "" {
+		return errors.New("backup task requires backup table")
+	}
+	if src.Table == destTable {
+		return errors.New("backup table must be different from source table")
+	}
+
+	if err := updateTaskFields(t.ID, map[string]any{
+		"total_tables":  1,
+		"done_tables":   0,
+		"dest_database": src.Database,
+		"dest_schema":   src.Schema,
+		"dest_table":    destTable,
+	}); err != nil {
+		return err
+	}
+	if err := checkCancel(ctx, t.ID); err != nil {
+		return err
+	}
+
+	var rows int64
+	switch conn.Driver {
+	case "postgres":
+		rows, err = backupPGTable(ctx, conn, src, destTable)
+	case "mysql":
+		rows, err = backupMySQLTable(ctx, conn, src, destTable)
+	default:
+		err = fmt.Errorf("driver %s not supported", conn.Driver)
+	}
+	if err != nil {
+		return err
+	}
+	return updateTaskFields(t.ID, map[string]any{
+		"done_tables":    1,
+		"processed_rows": rows,
+		"total_rows":     rows,
+		"progress":       100,
+	})
+}
+
+func backupPGTable(ctx context.Context, conn *model.Connection, src exportTable, destTable string) (int64, error) {
+	c := dbexec.WithDatabase(conn, src.Database)
+	pool, err := dbexec.AcquirePGPool(ctx, c)
+	if err != nil {
+		return 0, err
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	createSQL, insertSQL := buildPGBackupSQL(src.Schema, src.Table, destTable)
+	if _, err := tx.Exec(ctx, createSQL); err != nil {
+		return 0, fmt.Errorf("create backup table: %w", err)
+	}
+	tag, err := tx.Exec(ctx, insertSQL)
+	if err != nil {
+		return 0, fmt.Errorf("copy table data: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+func backupMySQLTable(ctx context.Context, conn *model.Connection, src exportTable, destTable string) (int64, error) {
+	c := dbexec.WithDatabase(conn, src.Database)
+	pool, err := dbexec.AcquireMySQLPool(ctx, c)
+	if err != nil {
+		return 0, err
+	}
+	createSQL, insertSQL := buildMySQLBackupSQL(src.Database, src.Table, destTable)
+	if _, err := pool.ExecContext(ctx, createSQL); err != nil {
+		return 0, fmt.Errorf("create backup table: %w", err)
+	}
+	res, err := pool.ExecContext(ctx, insertSQL)
+	if err != nil {
+		_, _ = pool.ExecContext(ctx, fmt.Sprintf(
+			"DROP TABLE `%s`.`%s`",
+			escapeMyIdent(src.Database),
+			escapeMyIdent(destTable),
+		))
+		return 0, fmt.Errorf("copy table data: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	return rows, nil
+}
+
+func buildPGBackupSQL(schema, table, destTable string) (string, string) {
+	src := quotePGIdent(schema) + "." + quotePGIdent(table)
+	dest := quotePGIdent(schema) + "." + quotePGIdent(destTable)
+	return fmt.Sprintf("CREATE TABLE %s (LIKE %s INCLUDING ALL)", dest, src),
+		fmt.Sprintf("INSERT INTO %s OVERRIDING SYSTEM VALUE SELECT * FROM %s", dest, src)
+}
+
+func buildMySQLBackupSQL(database, table, destTable string) (string, string) {
+	src := fmt.Sprintf("`%s`.`%s`", escapeMyIdent(database), escapeMyIdent(table))
+	dest := fmt.Sprintf("`%s`.`%s`", escapeMyIdent(database), escapeMyIdent(destTable))
+	return fmt.Sprintf("CREATE TABLE %s LIKE %s", dest, src),
+		fmt.Sprintf("INSERT INTO %s SELECT * FROM %s", dest, src)
+}
+
 func listAllTablesInDatabase(ctx context.Context, conn *model.Connection, database string) ([]exportTable, error) {
 	c := dbexec.WithDatabase(conn, database)
 	schemas, err := dbexec.ListSchemas(ctx, c)

@@ -35,9 +35,10 @@ var (
 // hiveJDBCConfig 表示从 Hive JDBC URL 解析出的连接配置。
 //
 // 兼容 JDBC 格式如：
-//   jdbc:hive2://host1:port1,host2:port2/database;serviceDiscoveryMode=zooKeeper;...
-//   jdbc:hive2://host:10000/default
-//   jdbc:hive2://host:443/default;ssl=true?hive.server2.transport.mode=http;hive.server2.thrift.http.path=/hive2
+//
+//	jdbc:hive2://host1:port1,host2:port2/database;serviceDiscoveryMode=zooKeeper;...
+//	jdbc:hive2://host:10000/default
+//	jdbc:hive2://host:443/default;ssl=true?hive.server2.transport.mode=http;hive.server2.thrift.http.path=/hive2
 type hiveJDBCConfig struct {
 	// Hosts 是直连模式下的主机列表（host:port）；ZooKeeper 模式下是 ZK 节点列表。
 	Hosts []string
@@ -416,6 +417,7 @@ func hiveExec(ctx context.Context, c *model.Connection, sqlStr string, args ...a
 					row[i] = val
 				}
 			}
+			row = normalizeRowValuesForJSON(out.Types, row)
 
 			out.Rows = append(out.Rows, row)
 			count++

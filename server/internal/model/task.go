@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-// TaskKind 任务种类：导入 / 导出 / 表结构同步 / 数据同步。
+// TaskKind 任务种类：导入 / 导出 / 表结构同步 / 数据同步 / 表备份。
 type TaskKind string
 
 const (
@@ -10,10 +10,13 @@ const (
 	TaskKindImport     TaskKind = "import"
 	TaskKindSchemaSync TaskKind = "schema_sync"
 	TaskKindDataSync   TaskKind = "data_sync"
+	TaskKindBackup     TaskKind = "backup"
 )
 
 func (k TaskKind) Valid() bool {
-	return k == TaskKindExport || k == TaskKindImport || k == TaskKindSchemaSync || k == TaskKindDataSync
+	return k == TaskKindExport || k == TaskKindImport ||
+		k == TaskKindSchemaSync || k == TaskKindDataSync ||
+		k == TaskKindBackup
 }
 
 // TaskScope 任务作用范围：整连接 / 单库 / 单 schema / 单表。

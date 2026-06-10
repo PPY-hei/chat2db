@@ -263,7 +263,7 @@ func pgExec(ctx context.Context, c *model.Connection, sql string, args ...any) (
 			if err != nil {
 				return nil, err
 			}
-			out.Rows = append(out.Rows, vals)
+			out.Rows = append(out.Rows, normalizeRowValuesForJSON(out.Types, vals))
 			count++
 		}
 		if err := rows.Err(); err != nil {

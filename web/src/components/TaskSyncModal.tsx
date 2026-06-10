@@ -35,6 +35,9 @@ const createValueReplacementDraft = (): ValueReplacementDraft => ({
   onMissing: "keep",
 });
 
+const findSameName = (name: string | undefined, options: string[]) =>
+  name && options.includes(name) ? name : undefined;
+
 /**
  * TaskSyncModal —— 创建同步任务（表结构同步 / 数据同步）。
  *
@@ -208,7 +211,11 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
     }
     api
       .listDatabases(destConnID)
-      .then((dbs) => setDestDatabases(dbs.map((d) => d.name)))
+      .then((dbs) => {
+        const names = dbs.map((d) => d.name);
+        setDestDatabases(names);
+        setDestDatabase((current) => current ?? findSameName(srcDatabase, names));
+      })
       .catch((e) => message.error(e?.response?.data?.error ?? "加载目标数据库失败"));
   }, [destConnID, message]);
 
@@ -223,8 +230,9 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
       .listSchemas(destConnID, destDatabase)
       .then((s) => {
         const names = s.map((x) => x.name);
+        const defaultSchema = findSameName(srcSchema, names) ?? (names.length === 1 ? names[0] : undefined);
         setDestSchemas(names);
-        if (names.length === 1) setDestSchema(names[0]);
+        setDestSchema((current) => current ?? defaultSchema);
       })
       .catch((e) => message.error(e?.response?.data?.error ?? "加载目标 schema 失败"));
   }, [destConnID, destDatabase, message]);
@@ -238,7 +246,11 @@ export default function TaskSyncModal({ open, groups, onClose, onCreated }: Prop
     }
     api
       .listTables(destConnID, destSchema, destDatabase)
-      .then((t) => setDestTables(t.filter((x) => x.kind === "table").map((x) => x.name)))
+      .then((t) => {
+        const names = t.filter((x) => x.kind === "table").map((x) => x.name);
+        setDestTables(names);
+        setDestTable((current) => current ?? findSameName(srcTable, names));
+      })
       .catch((e) => message.error(e?.response?.data?.error ?? "加载目标表失败"));
   }, [destConnID, destDatabase, destSchema, message]);
 

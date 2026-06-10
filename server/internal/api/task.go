@@ -35,6 +35,7 @@ type createTaskRequest struct {
 	WhereCondition      string                           `json:"where_condition"`        // 单表导出/数据同步的 WHERE 条件片段
 	OnConflictDoNothing bool                             `json:"on_conflict_do_nothing"` // INSERT SQL 冲突时忽略
 	ValueReplacements   []service.ExportValueReplacement `json:"value_replacements"`     // INSERT SQL/单表数据同步列值替换
+	BackupTable         string                           `json:"backup_table"`           // 单表备份的目标表名
 }
 
 // CreateTask 新建任务（创建者需要在目标组中至少为 editor）。
@@ -61,6 +62,7 @@ func CreateTask(c *gin.Context) {
 		ExportWhere:         strings.TrimSpace(req.WhereCondition),
 		OnConflictDoNothing: req.OnConflictDoNothing,
 		ValueReplacements:   req.ValueReplacements,
+		BackupTable:         strings.TrimSpace(req.BackupTable),
 	})
 	if err != nil {
 		badRequest(c, err)

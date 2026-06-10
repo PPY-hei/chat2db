@@ -995,7 +995,13 @@ function SingleResult({ result }: { result: QueryResult }) {
 }
 
 function formatCell(v: any): string {
-  if (v === null || v === undefined) return "∅";
+  if (v === null || v === undefined) return "null";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+function exportCell(v: any): string {
+  if (v === null || v === undefined) return "null";
   if (typeof v === "object") return JSON.stringify(v);
   return String(v);
 }
@@ -1003,7 +1009,7 @@ function formatCell(v: any): string {
 function downloadCSV(r: QueryResult) {
   const lines = [r.columns!.map(csvEscape).join(",")];
   (r.rows ?? []).forEach((row) =>
-    lines.push(row.map((c) => csvEscape(formatCell(c))).join(","))
+    lines.push(row.map((c) => csvEscape(exportCell(c))).join(","))
   );
   const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);

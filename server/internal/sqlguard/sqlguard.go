@@ -340,11 +340,18 @@ func stripQuotesAndComments(s string) string {
 // CheckAllowed returns nil if every statement in raw SQL is allowed for the given role.
 // Viewer: only CatRead.
 // Editor: CatRead + CatWrite + CatTx (commit/rollback to undo accidents).
-// Admin / Owner: everything (including DDL/Admin).
+// Admin: CatRead + CatWrite + CatTx + CatDDL + CatAdmin.
+// Owner: unrestricted — every statement type passes, including CatUnknown
+// (e.g. DO anonymous blocks) that no other role may run.
 func CheckAllowed(raw string, role model.Role) error {
 	stmts := Split(raw)
 	if len(stmts) == 0 {
 		return errors.New("empty SQL")
+	}
+	// Owner is unrestricted: allow any statement type to pass the role guard,
+	// including statements classified as CatUnknown such as DO anonymous blocks.
+	if role == model.RoleOwner {
+		return nil
 	}
 	for _, s := range stmts {
 		st := Classify(s)

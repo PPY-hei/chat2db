@@ -35,6 +35,7 @@ import type {
 } from "../types";
 import TaskCreateModal from "./TaskCreateModal";
 import TaskSyncModal from "./TaskSyncModal";
+import TaskBackupModal from "./TaskBackupModal";
 
 void ({} as Connection); // 占位：保留 import 以便后续扩展（创建表单内部用到）
 
@@ -66,6 +67,7 @@ const KIND_LABEL: Record<TaskKind, string> = {
   import: "导入",
   schema_sync: "表结构同步",
   data_sync: "表数据同步",
+  backup: "备份",
 };
 
 const SCOPE_LABEL: Record<TaskScope, string> = {
@@ -77,13 +79,14 @@ const SCOPE_LABEL: Record<TaskScope, string> = {
 
 const DEFAULT_PAGE_SIZE = 20;
 const POLL_INTERVAL_MS = 5000;
+const defaultRangeEnd = () => dayjs().endOf("day");
 
 export default function TaskListModal({ open, groups, onClose }: Props) {
   const { message, modal } = App.useApp();
 
   const [range, setRange] = useState<[Dayjs, Dayjs]>(() => [
     dayjs().subtract(30, "day"),
-    dayjs(),
+    defaultRangeEnd(),
   ]);
   const [keyword, setKeyword] = useState("");
   const [committedKeyword, setCommittedKeyword] = useState("");
@@ -97,6 +100,7 @@ export default function TaskListModal({ open, groups, onClose }: Props) {
   const [loading, setLoading] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
+  const [backupOpen, setBackupOpen] = useState(false);
 
   const visibleGroupIDs = data?.visible_group_ids ?? [];
   const groupOptions = useMemo(
@@ -218,6 +222,15 @@ export default function TaskListModal({ open, groups, onClose }: Props) {
           if (row.kind === "schema_sync" || row.kind === "data_sync") {
             const src = `${row.target_database}.${row.target_schema}.${row.target_table}`;
             const dest = `${row.dest_database}.${row.dest_schema}.${row.dest_table}`;
+            return (
+              <span style={{ fontSize: 12 }}>
+                {src} → {dest}
+              </span>
+            );
+          }
+          if (row.kind === "backup") {
+            const src = `${row.target_database}.${row.target_schema}.${row.target_table}`;
+            const dest = `${row.dest_database || row.target_database}.${row.dest_schema || row.target_schema}.${row.dest_table}`;
             return (
               <span style={{ fontSize: 12 }}>
                 {src} → {dest}
@@ -358,9 +371,9 @@ export default function TaskListModal({ open, groups, onClose }: Props) {
               }
             }}
             presets={[
-              { label: "近 1 天", value: [dayjs().subtract(1, "day"), dayjs()] },
-              { label: "近 7 天", value: [dayjs().subtract(7, "day"), dayjs()] },
-              { label: "近 30 天", value: [dayjs().subtract(30, "day"), dayjs()] },
+              { label: "近 1 天", value: [dayjs().subtract(1, "day"), defaultRangeEnd()] },
+              { label: "近 7 天", value: [dayjs().subtract(7, "day"), defaultRangeEnd()] },
+              { label: "近 30 天", value: [dayjs().subtract(30, "day"), defaultRangeEnd()] },
             ]}
           />
           <Select
@@ -386,6 +399,9 @@ export default function TaskListModal({ open, groups, onClose }: Props) {
             options={[
               { label: "导出", value: "export" },
               { label: "导入", value: "import" },
+              { label: "备份", value: "backup" },
+              { label: "表结构同步", value: "schema_sync" },
+              { label: "表数据同步", value: "data_sync" },
             ]}
           />
           <Select
@@ -437,6 +453,9 @@ export default function TaskListModal({ open, groups, onClose }: Props) {
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
             新建导出
           </Button>
+          <Button type="default" icon={<PlusOutlined />} onClick={() => setBackupOpen(true)}>
+            新建备份
+          </Button>
           <Button type="default" icon={<PlusOutlined />} onClick={() => setSyncOpen(true)}>
             新建同步
           </Button>
@@ -480,6 +499,16 @@ export default function TaskListModal({ open, groups, onClose }: Props) {
         onClose={() => setSyncOpen(false)}
         onCreated={() => {
           setSyncOpen(false);
+          reload();
+        }}
+      />
+
+      <TaskBackupModal
+        open={backupOpen}
+        groups={groups}
+        onClose={() => setBackupOpen(false)}
+        onCreated={() => {
+          setBackupOpen(false);
           reload();
         }}
       />

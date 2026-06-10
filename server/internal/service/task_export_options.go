@@ -36,6 +36,10 @@ type dataSyncTaskOptions struct {
 	ValueReplacements []ExportValueReplacement `json:"value_replacements,omitempty"`
 }
 
+type backupTaskOptions struct {
+	BackupTable string `json:"backup_table,omitempty"`
+}
+
 func buildExportTaskParams(format, where string, onConflictDoNothing bool, valueReplacements []ExportValueReplacement) (string, error) {
 	opts, err := normalizeExportTaskOptions(exportTaskOptions{
 		Format:              format,
@@ -71,6 +75,18 @@ func buildDataSyncTaskParams(where string, valueReplacements []ExportValueReplac
 	return string(b), nil
 }
 
+func buildBackupTaskParams(backupTable string) (string, error) {
+	opts, err := normalizeBackupTaskOptions(backupTaskOptions{BackupTable: backupTable})
+	if err != nil {
+		return "", err
+	}
+	b, err := json.Marshal(opts)
+	if err != nil {
+		return "", fmt.Errorf("marshal backup params: %w", err)
+	}
+	return string(b), nil
+}
+
 func parseExportTaskOptions(raw string) (exportTaskOptions, error) {
 	if strings.TrimSpace(raw) == "" {
 		return exportTaskOptions{Format: exportFormatCSV}, nil
@@ -91,6 +107,17 @@ func parseDataSyncTaskOptions(raw string) (dataSyncTaskOptions, error) {
 		return dataSyncTaskOptions{}, fmt.Errorf("parse data sync params: %w", err)
 	}
 	return normalizeDataSyncTaskOptions(opts)
+}
+
+func parseBackupTaskOptions(raw string) (backupTaskOptions, error) {
+	if strings.TrimSpace(raw) == "" {
+		return backupTaskOptions{}, errors.New("backup params are required")
+	}
+	var opts backupTaskOptions
+	if err := json.Unmarshal([]byte(raw), &opts); err != nil {
+		return backupTaskOptions{}, fmt.Errorf("parse backup params: %w", err)
+	}
+	return normalizeBackupTaskOptions(opts)
 }
 
 func normalizeExportTaskOptions(opts exportTaskOptions) (exportTaskOptions, error) {
@@ -133,6 +160,17 @@ func normalizeDataSyncTaskOptions(opts dataSyncTaskOptions) (dataSyncTaskOptions
 	}
 	opts.Where = where
 	opts.ValueReplacements = replacements
+	return opts, nil
+}
+
+func normalizeBackupTaskOptions(opts backupTaskOptions) (backupTaskOptions, error) {
+	opts.BackupTable = strings.TrimSpace(opts.BackupTable)
+	if opts.BackupTable == "" {
+		return backupTaskOptions{}, errors.New("backup table is required")
+	}
+	if strings.ContainsAny(opts.BackupTable, "\x00\r\n") {
+		return backupTaskOptions{}, errors.New("backup table contains invalid character")
+	}
 	return opts, nil
 }
 

@@ -183,7 +183,7 @@ export interface AuditLogPage {
 
 // ========== 异步任务（导入 / 导出 / 同步） ==========
 
-export type TaskKind = "export" | "import" | "schema_sync" | "data_sync";
+export type TaskKind = "export" | "import" | "schema_sync" | "data_sync" | "backup";
 export type TaskScope = "connection" | "database" | "schema" | "table";
 export type TaskStatus =
   | "pending"
@@ -270,4 +270,5 @@ export interface CreateTaskRequest {
   where_condition?: string;
   on_conflict_do_nothing?: boolean;
   value_replacements?: ExportValueReplacement[];
+  backup_table?: string;
 }

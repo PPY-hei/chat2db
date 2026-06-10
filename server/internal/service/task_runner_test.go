@@ -161,12 +161,44 @@ func TestParseDataSyncTaskOptionsKeepsWhereAndValueReplacements(t *testing.T) {
 	}
 }
 
+func TestParseBackupTaskOptionsKeepsBackupTable(t *testing.T) {
+	raw, err := buildBackupTaskParams(" users_bak ")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	opts, err := parseBackupTaskOptions(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if opts.BackupTable != "users_bak" {
+		t.Fatalf("backup_table=%q want users_bak", opts.BackupTable)
+	}
+}
+
 func TestBuildExportSelectWithWhere(t *testing.T) {
 	et := exportTable{Database: "app", Schema: "public", Table: "users"}
 	got := buildPGExportSelect(et, "tenant_id = 1001")
 	want := `SELECT * FROM "public"."users" WHERE tenant_id = 1001`
 	if got != want {
 		t.Fatalf("unexpected select:\nwant %s\ngot  %s", want, got)
+	}
+}
+
+func TestBuildBackupSQL(t *testing.T) {
+	pgCreate, pgInsert := buildPGBackupSQL(`pub"lic`, "users", "users_bak")
+	if pgCreate != `CREATE TABLE "pub""lic"."users_bak" (LIKE "pub""lic"."users" INCLUDING ALL)` {
+		t.Fatalf("unexpected pg create: %s", pgCreate)
+	}
+	if pgInsert != `INSERT INTO "pub""lic"."users_bak" OVERRIDING SYSTEM VALUE SELECT * FROM "pub""lic"."users"` {
+		t.Fatalf("unexpected pg insert: %s", pgInsert)
+	}
+
+	myCreate, myInsert := buildMySQLBackupSQL("app`db", "users", "users_bak")
+	if myCreate != "CREATE TABLE `app``db`.`users_bak` LIKE `app``db`.`users`" {
+		t.Fatalf("unexpected mysql create: %s", myCreate)
+	}
+	if myInsert != "INSERT INTO `app``db`.`users_bak` SELECT * FROM `app``db`.`users`" {
+		t.Fatalf("unexpected mysql insert: %s", myInsert)
 	}
 }
 

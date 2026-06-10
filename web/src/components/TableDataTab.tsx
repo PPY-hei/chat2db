@@ -686,9 +686,15 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
     URL.revokeObjectURL(url);
   };
 
-  // 把任意单元格值标准化为字符串（与 SQLTab 的 formatCell 行为对齐）
+  // 把任意单元格值标准化为导出文本；UI 的 null 占位符只用于页面显示。
   const cellToString = (v: any): string => {
-    if (v === null || v === undefined) return "";
+    if (v === null || v === undefined) return "null";
+    if (typeof v === "object") return JSON.stringify(v);
+    return String(v);
+  };
+
+  const cellToDisplayText = (v: any): string => {
+    if (v === null || v === undefined) return "null";
     if (typeof v === "object") return JSON.stringify(v);
     return String(v);
   };
@@ -1020,14 +1026,17 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
             ? { background: "#fef3c7", borderRadius: 2, padding: "0 4px", margin: "-0 -4px" }
             : {};
 
-          if (displayVal === null || displayVal === undefined || displayVal === "") {
+          if (displayVal === null || displayVal === undefined) {
             return (
               <span style={{ ...cellStyle, color: "#9ca3af" }}>
-                {displayVal === "" && isDirty ? "(empty)" : "∅"}
+                null
               </span>
             );
           }
-          return <span style={cellStyle}>{String(displayVal)}</span>;
+          if (displayVal === "") {
+            return <span style={{ ...cellStyle, color: "#9ca3af" }}>{isDirty ? "(empty)" : ""}</span>;
+          }
+          return <span style={cellStyle}>{cellToDisplayText(displayVal)}</span>;
         },
       };
     }) ?? [];

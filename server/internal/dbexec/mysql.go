@@ -280,6 +280,7 @@ func mysqlExec(ctx context.Context, c *model.Connection, sqlStr string, args ...
 					row[i] = vv
 				}
 			}
+			row = normalizeRowValuesForJSON(out.Types, row)
 			out.Rows = append(out.Rows, row)
 			count++
 		}

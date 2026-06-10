@@ -58,6 +58,7 @@ type CreateTaskParams struct {
 	ExportWhere         string
 	OnConflictDoNothing bool
 	ValueReplacements   []ExportValueReplacement
+	BackupTable         string
 }
 
 // CreateTask 校验权限 + 入库 + 入队。返回已分配 ID 的 Task。
@@ -143,6 +144,37 @@ func CreateTask(actorID uint, p CreateTaskParams) (*model.Task, error) {
 			return nil, errors.New("schema sync does not support value replacements")
 		}
 	}
+	if p.Kind == model.TaskKindBackup {
+		if p.Scope != model.TaskScopeTable {
+			return nil, errors.New("backup task only supports scope=table")
+		}
+		if strings.TrimSpace(p.ExportWhere) != "" {
+			return nil, errors.New("backup task does not support where condition")
+		}
+		if len(p.ValueReplacements) > 0 {
+			return nil, errors.New("backup task does not support value replacements")
+		}
+		if strings.TrimSpace(p.BackupTable) == "" {
+			p.BackupTable = p.DestTable
+		}
+		if strings.TrimSpace(p.BackupTable) == "" {
+			return nil, errors.New("backup task requires backup table")
+		}
+		if strings.TrimSpace(p.TargetSchema) == "" {
+			return nil, errors.New("backup task requires target_schema")
+		}
+		if p.BackupTable == p.TargetTable {
+			return nil, errors.New("backup table must be different from source table")
+		}
+		var err error
+		taskParams, err = buildBackupTaskParams(p.BackupTable)
+		if err != nil {
+			return nil, err
+		}
+		p.DestDatabase = p.TargetDatabase
+		p.DestSchema = p.TargetSchema
+		p.DestTable = p.BackupTable
+	}
 
 	// 范围参数完整性校验
 	switch p.Scope {
@@ -154,6 +186,9 @@ func CreateTask(actorID uint, p CreateTaskParams) (*model.Task, error) {
 		if (p.Kind == model.TaskKindDataSync || p.Kind == model.TaskKindSchemaSync) &&
 			(p.DestDatabase == "" || p.DestTable == "") {
 			return nil, errors.New("sync tasks with scope=table require dest_database and dest_table")
+		}
+		if p.Kind == model.TaskKindBackup && p.DestTable == "" {
+			return nil, errors.New("backup task requires dest_table")
 		}
 	case model.TaskScopeSchema:
 		if p.TargetDatabase == "" || p.TargetSchema == "" {
@@ -302,8 +337,8 @@ func QueryTasks(f TaskFilter) (*TaskPage, error) {
 	}
 	if f.Keyword != "" {
 		kw := "%" + f.Keyword + "%"
-		q = q.Where("creator_name LIKE ? OR target_database LIKE ? OR target_table LIKE ? OR error_msg LIKE ?",
-			kw, kw, kw, kw)
+		q = q.Where("creator_name LIKE ? OR target_database LIKE ? OR target_table LIKE ? OR dest_table LIKE ? OR error_msg LIKE ?",
+			kw, kw, kw, kw, kw)
 	}
 
 	var total int64
