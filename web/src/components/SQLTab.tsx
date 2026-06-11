@@ -49,6 +49,7 @@ export default function SQLTab({ tab }: Props) {
   const abortRef = useRef<AbortController | null>(null);
   const defaultSQL = "";
   const [sql, setSQL] = useState<string>(tab.initialSQL ?? defaultSQL);
+  const [lastRunSQL, setLastRunSQL] = useState<string>(tab.initialSQL ?? defaultSQL);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ExecuteResponse | null>(null);
   const [aiOpen, setAIOpen] = useState(false);
@@ -228,6 +229,7 @@ export default function SQLTab({ tab }: Props) {
       message.warning("没有可执行的 SQL");
       return;
     }
+    setLastRunSQL(toRun);
     const controller = new AbortController();
     abortRef.current = controller;
     setRunning(true);
@@ -625,7 +627,7 @@ export default function SQLTab({ tab }: Props) {
           title="拖拽调整高度，双击恢复默认"
         />
         <div className="sql-results-pane" style={{ height: `${(1 - editorRatio) * 100}%` }}>
-          <ResultsPane result={result} />
+          <ResultsPane result={result} tab={tab} sql={lastRunSQL || sql} />
         </div>
       </div>
 
@@ -897,7 +899,7 @@ export default function SQLTab({ tab }: Props) {
   );
 }
 
-function ResultsPane({ result }: { result: ExecuteResponse | null }) {
+function ResultsPane({ result, tab, sql }: { result: ExecuteResponse | null; tab: OpenedTab; sql: string }) {
   if (!result) {
     return (
       <div style={{ padding: 16, color: "#9ca3af" }}>
@@ -921,13 +923,14 @@ function ResultsPane({ result }: { result: ExecuteResponse | null }) {
       items={result.results.map((r, idx) => ({
         key: String(idx),
         label: `结果 ${idx + 1} (${r.rows?.length ?? 0} 行, ${r.elapsed_ms}ms)`,
-        children: <SingleResult result={r} />,
+        children: <SingleResult result={r} tab={tab} sql={sql} />,
       }))}
     />
   );
 }
 
-function SingleResult({ result }: { result: QueryResult }) {
+function SingleResult({ result, tab, sql }: { result: QueryResult; tab: OpenedTab; sql: string }) {
+  const { message } = App.useApp();
   if (!result.columns || result.columns.length === 0) {
     return (
       <div style={{ padding: 12 }}>
@@ -936,6 +939,34 @@ function SingleResult({ result }: { result: QueryResult }) {
       </div>
     );
   }
+  const rows = result.rows ?? [];
+  const copyText = async (text: string, successText: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      message.success(successText);
+    } catch {
+      message.error("复制失败");
+    }
+  };
+  const copyAsTSV = () => {
+    const lines = [result.columns!.join("\t")];
+    rows.forEach((r) =>
+      lines.push(r.map((c) => escapeTSV(formatCell(c))).join("\t"))
+    );
+    copyText(lines.join("\n"), `已复制 ${rows.length} 行 TSV`);
+  };
+  const copyAsJSON = () => {
+    const json = JSON.stringify(resultRowsAsObjects(result), null, 2);
+    copyText(json, `已复制 ${rows.length} 行 JSON`);
+  };
+  const copyAsInsertSQL = () => {
+    const stmts = generateResultInsertSQL(result, sql, tab);
+    if (stmts.length === 0) {
+      message.warning("没有可复制的 INSERT SQL");
+      return;
+    }
+    copyText(stmts.join("\n"), `已复制 ${stmts.length} 行 INSERT SQL`);
+  };
   const columns = result.columns.map((name, i) => ({
     title: (
       <Space>
@@ -957,21 +988,27 @@ function SingleResult({ result }: { result: QueryResult }) {
     <div>
       <Space style={{ marginBottom: 8 }}>
         {result.truncated && <Tag color="orange">结果已截断到上限</Tag>}
-        <Tooltip title="复制为 TSV">
+        <Dropdown
+          menu={{
+            items: [
+              { key: "insert-sql", label: "复制为 INSERT SQL" },
+              { key: "json", label: "复制为 JSON" },
+              { key: "tsv", label: "复制为 TSV" },
+            ],
+            onClick: ({ key }) => {
+              if (key === "insert-sql") copyAsInsertSQL();
+              else if (key === "json") copyAsJSON();
+              else if (key === "tsv") copyAsTSV();
+            },
+          }}
+        >
           <Button
             size="small"
             icon={<CopyOutlined />}
-            onClick={() => {
-              const lines = [result.columns!.join("\t")];
-              (result.rows ?? []).forEach((r) =>
-                lines.push(r.map((c) => formatCell(c)).join("\t"))
-              );
-              navigator.clipboard.writeText(lines.join("\n"));
-            }}
           >
             复制
           </Button>
-        </Tooltip>
+        </Dropdown>
         <Tooltip title="下载 CSV">
           <Button
             size="small"
@@ -998,6 +1035,127 @@ function formatCell(v: any): string {
   if (v === null || v === undefined) return "null";
   if (typeof v === "object") return JSON.stringify(v);
   return String(v);
+}
+
+function resultRowsAsObjects(r: QueryResult): Record<string, any>[] {
+  const columns = uniqueObjectKeys(r.columns ?? []);
+  return (r.rows ?? []).map((row) => {
+    const o: Record<string, any> = {};
+    columns.forEach((name, i) => {
+      o[name] = row[i] ?? null;
+    });
+    return o;
+  });
+}
+
+function uniqueObjectKeys(columns: string[]): string[] {
+  const seen: Record<string, number> = {};
+  return columns.map((name, i) => {
+    const base = name || `column_${i + 1}`;
+    const next = (seen[base] ?? 0) + 1;
+    seen[base] = next;
+    return next === 1 ? base : `${base}_${next}`;
+  });
+}
+
+function escapeTSV(s: string): string {
+  return s.replace(/\t/g, "\\t").replace(/\r?\n/g, "\\n");
+}
+
+function generateResultInsertSQL(r: QueryResult, sql: string, tab: OpenedTab): string[] {
+  const columns = r.columns ?? [];
+  const rows = r.rows ?? [];
+  if (columns.length === 0 || rows.length === 0) return [];
+  const target = extractInsertTarget(sql, tab);
+  const colList = columns.map((name) => quoteIdentifier(name, tab.driver)).join(", ");
+  return rows.map((row) => {
+    const values = columns.map((_name, i) => sqlLiteralFromCell(row[i], r.types?.[i], tab.driver === "mysql"));
+    return `INSERT INTO ${target} (${colList}) VALUES (${values.join(", ")});`;
+  });
+}
+
+function extractInsertTarget(sql: string, tab: OpenedTab): string {
+  const cleaned = stripSQLComments(sql);
+  const quoted = [
+    /(?:^|[\s;(])FROM\s+"([^"]+)"\s*\.\s*"([^"]+)"/i,
+    /(?:^|[\s;(])FROM\s+`([^`]+)`\s*\.\s*`([^`]+)`/i,
+    /(?:^|[\s;(])FROM\s+([a-zA-Z_][a-zA-Z0-9_$]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_$]*)/i,
+  ];
+  for (const pattern of quoted) {
+    const m = cleaned.match(pattern);
+    if (m?.[1] && m?.[2]) return qualifyIdentifier([m[1], m[2]], tab.driver);
+  }
+
+  const single = [
+    /(?:^|[\s;(])FROM\s+"([^"]+)"/i,
+    /(?:^|[\s;(])FROM\s+`([^`]+)`/i,
+    /(?:^|[\s;(])FROM\s+([a-zA-Z_][a-zA-Z0-9_$]*)/i,
+  ];
+  for (const pattern of single) {
+    const m = cleaned.match(pattern);
+    if (!m?.[1]) continue;
+    const parts =
+      tab.driver === "mysql" && tab.database
+        ? [tab.database, m[1]]
+        : tab.schema
+        ? [tab.schema, m[1]]
+        : [m[1]];
+    return qualifyIdentifier(parts, tab.driver);
+  }
+
+  return quoteIdentifier("result_table", tab.driver);
+}
+
+function stripSQLComments(sql: string): string {
+  return sql
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/--[^\n\r]*/g, " ");
+}
+
+function qualifyIdentifier(parts: string[], driver?: string): string {
+  return parts.filter(Boolean).map((part) => quoteIdentifier(part, driver)).join(".");
+}
+
+function quoteIdentifier(name: string, driver?: string): string {
+  if (driver === "hive") return name;
+  if (driver === "mysql") return "`" + name.replace(/`/g, "``") + "`";
+  return '"' + name.replace(/"/g, '""') + '"';
+}
+
+function isNumericLike(dt: string | undefined): boolean {
+  if (!dt) return false;
+  const s = dt.toLowerCase();
+  return /(int|serial|bigint|smallint|numeric|decimal|real|double|float|money)/.test(s);
+}
+
+function isBoolLike(dt: string | undefined): boolean {
+  if (!dt) return false;
+  const s = dt.toLowerCase();
+  return s.startsWith("bool") || s === "tinyint(1)";
+}
+
+function sqlQuote(s: string, mysql?: boolean): string {
+  if (mysql) return "'" + s.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+  return "'" + s.replace(/'/g, "''") + "'";
+}
+
+function sqlLiteralFromCell(value: any, dt: string | undefined, mysql?: boolean): string {
+  if (value === null || value === undefined) return "NULL";
+  if (value instanceof Date) return sqlQuote(value.toISOString(), mysql);
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "NULL";
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+  if (typeof value === "object") return sqlQuote(JSON.stringify(value), mysql);
+
+  const raw = String(value);
+  const trimmed = raw.trim();
+  if (trimmed === "") return sqlQuote("", mysql);
+  if (isBoolLike(dt)) {
+    const lv = trimmed.toLowerCase();
+    if (lv === "true" || lv === "t" || lv === "1") return "TRUE";
+    if (lv === "false" || lv === "f" || lv === "0") return "FALSE";
+  }
+  if (isNumericLike(dt) && /^-?\d+(\.\d+)?$/.test(trimmed)) return trimmed;
+  return sqlQuote(raw, mysql);
 }
 
 function exportCell(v: any): string {
