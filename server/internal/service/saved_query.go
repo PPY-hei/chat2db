@@ -6,6 +6,7 @@ import (
 
 	"github.com/chy/chat2db/server/internal/db"
 	"github.com/chy/chat2db/server/internal/model"
+	"gorm.io/gorm"
 )
 
 // SaveQueryInput is the request body for saving a query.
@@ -59,6 +60,9 @@ func CreateSavedQuery(actorID uint, in SaveQueryInput) (*model.SavedQuery, error
 func DeleteSavedQuery(actorID, id uint) error {
 	var sq model.SavedQuery
 	if err := db.Meta().First(&sq, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
 		return err
 	}
 	if sq.CreatedByID != actorID {
@@ -116,6 +120,10 @@ func querySavedQueries(where string, args []any) ([]SavedQueryView, error) {
 		Joins("JOIN "+metaTable("connections", "c")+" ON c.id = sq.connection_id").
 		Joins("JOIN "+metaTable("users", "u")+" ON u.id = sq.created_by_id").
 		Where(where, args...).
+		Where(metaCol("sq", "deleted_at") + " IS NULL").
+		Where(metaCol("g", "deleted_at") + " IS NULL").
+		Where(metaCol("c", "deleted_at") + " IS NULL").
+		Where(metaCol("u", "deleted_at") + " IS NULL").
 		Order("sq.created_at DESC")
 	if err := q.Scan(&rows).Error; err != nil {
 		return nil, err
