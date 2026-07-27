@@ -38,6 +38,7 @@ import { api } from "../api";
 import type { ExecuteResponse, QueryResult, SavedQuery } from "../types";
 import type { OpenedTab } from "../pages/MainLayout";
 import { ROLE_TAG_COLOR } from "../utils/role";
+import { copyToClipboard } from "../utils/clipboard";
 
 interface Props {
   tab: OpenedTab;
@@ -922,11 +923,17 @@ function ResultsPane({ result, tab, sql }: { result: ExecuteResponse | null; tab
       style={{ padding: "0 12px" }}
       items={result.results.map((r, idx) => ({
         key: String(idx),
-        label: `结果 ${idx + 1} (${r.rows?.length ?? 0} 行, ${r.elapsed_ms}ms)`,
+        label: `结果 ${idx + 1} (${resultCountLabel(r)}, ${r.elapsed_ms}ms)`,
         children: <SingleResult result={r} tab={tab} sql={sql} />,
       }))}
     />
   );
+}
+
+function resultCountLabel(result: QueryResult): string {
+  const isQueryResult = !!result.columns && result.columns.length > 0;
+  if (isQueryResult) return `${result.rows?.length ?? 0} 行`;
+  return `${result.rows_affected} 行受影响`;
 }
 
 function SingleResult({ result, tab, sql }: { result: QueryResult; tab: OpenedTab; sql: string }) {
@@ -942,7 +949,7 @@ function SingleResult({ result, tab, sql }: { result: QueryResult; tab: OpenedTa
   const rows = result.rows ?? [];
   const copyText = async (text: string, successText: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyToClipboard(text);
       message.success(successText);
     } catch {
       message.error("复制失败");

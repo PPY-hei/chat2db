@@ -36,6 +36,7 @@ import { api } from "../api";
 import type { ColumnInfo, ExecuteResponse } from "../types";
 import type { OpenedTab } from "../pages/MainLayout";
 import { ROLE_TAG_COLOR, canWrite } from "../utils/role";
+import { copyToClipboard } from "../utils/clipboard";
 import TableStructureView from "./TableStructureView";
 
 interface Props {
@@ -101,6 +102,23 @@ function isBoolLike(dt: string | undefined): boolean {
   return s.startsWith("bool") || s === "tinyint(1)";
 }
 
+function isArrayLike(dt: string | undefined): boolean {
+  return !!dt && /\[\]$/.test(dt.trim());
+}
+
+// Keep structured database values readable in the table, editor, and text exports.
+function cellToText(value: any, nullText = "null"): string {
+  if (value === null || value === undefined) return nullText;
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
 // SQL 字符串字面量转义
 function sqlQuote(s: string, mysql?: boolean): string {
   if (mysql) {
@@ -111,9 +129,38 @@ function sqlQuote(s: string, mysql?: boolean): string {
   return "'" + s.replace(/'/g, "''") + "'";
 }
 
+// 编辑器输入使用 JSON 数组格式，转换成 PostgreSQL 可执行的数组表达式。
+function postgresArrayLiteral(value: string, dt: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+
+  const elementType = dt.trim().slice(0, -2);
+  const elements = parsed.map((item) => {
+    if (item === null || item === undefined) return "NULL";
+    if (typeof item === "number" && Number.isFinite(item) && isNumericLike(elementType)) {
+      return String(item);
+    }
+    if (typeof item === "boolean" && isBoolLike(elementType)) {
+      return item ? "TRUE" : "FALSE";
+    }
+    return sqlQuote(typeof item === "object" ? JSON.stringify(item) : String(item));
+  });
+
+  return `ARRAY[${elements.join(", ")}]::${dt.trim()}`;
+}
+
 // 把单个值按列类型生成字面量
 function literalFor(value: string, dt: string | undefined, mysql?: boolean): string {
   const v = value.trim();
+  if (!mysql && isArrayLike(dt)) {
+    const arrayLiteral = postgresArrayLiteral(v, dt!);
+    if (arrayLiteral) return arrayLiteral;
+  }
   if (isBoolLike(dt)) {
     const lv = v.toLowerCase();
     if (lv === "true" || lv === "t" || lv === "1") return "TRUE";
@@ -129,7 +176,11 @@ function sqlLiteralFromCell(value: any, dt: string | undefined, mysql?: boolean)
   if (value instanceof Date) return sqlQuote(value.toISOString(), mysql);
   if (typeof value === "number") return Number.isFinite(value) ? String(value) : "NULL";
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
-  if (typeof value === "object") return sqlQuote(JSON.stringify(value), mysql);
+  if (typeof value === "object") {
+    const serialized = JSON.stringify(value);
+    if (!mysql && isArrayLike(dt)) return literalFor(serialized, dt, mysql);
+    return sqlQuote(serialized, mysql);
+  }
 
   const raw = String(value);
   const trimmed = raw.trim();
@@ -425,7 +476,7 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
   const startEdit = (rowIdx: number, colName: string, currentVal: any) => {
     if (!canEdit || !hasPK) return;
     setEditingCell({ row: rowIdx, col: colName });
-    setEditingValue(currentVal === null || currentVal === undefined ? "" : String(currentVal));
+    setEditingValue(cellToText(currentVal, ""));
     // 焦点交给下面的 useEffect 处理，避免 setTimeout 带来的竞态
   };
 
@@ -459,7 +510,7 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
       return;
     }
     const origVal = originalRow[colIdx];
-    const origStr = origVal === null || origVal === undefined ? "" : String(origVal);
+    const origStr = cellToText(origVal, "");
     const newStr = editingValue;
 
     setDirtyRows((prev) => {
@@ -688,20 +739,16 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
 
   // 把任意单元格值标准化为导出文本；UI 的 null 占位符只用于页面显示。
   const cellToString = (v: any): string => {
-    if (v === null || v === undefined) return "null";
-    if (typeof v === "object") return JSON.stringify(v);
-    return String(v);
+    return cellToText(v);
   };
 
   const cellToDisplayText = (v: any): string => {
-    if (v === null || v === undefined) return "null";
-    if (typeof v === "object") return JSON.stringify(v);
-    return String(v);
+    return cellToText(v);
   };
 
   const copyText = async (text: string, successText: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyToClipboard(text);
       message.success(successText);
     } catch {
       message.error("复制失败");
@@ -1441,10 +1488,7 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
           <Button
             key="copy"
             icon={<CopyOutlined />}
-            onClick={() => {
-              navigator.clipboard.writeText(generateUpdateSQL().join("\n"));
-              message.success("已复制 SQL");
-            }}
+            onClick={() => copyText(generateUpdateSQL().join("\n"), "已复制 SQL")}
           >
             复制
           </Button>,
@@ -1493,10 +1537,7 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
           <Button
             key="copy"
             icon={<CopyOutlined />}
-            onClick={() => {
-              navigator.clipboard.writeText(ddl);
-              message.success("已复制 DDL");
-            }}
+            onClick={() => copyText(ddl, "已复制 DDL")}
           >
             复制
           </Button>,
@@ -1583,8 +1624,7 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
                     message.warning("无可复制的 SQL");
                     return;
                   }
-                  navigator.clipboard.writeText(text);
-                  message.success("已复制 SQL");
+                  copyText(text, "已复制 SQL");
                 }}
               >
                 复制
