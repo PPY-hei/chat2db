@@ -31,6 +31,7 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   UploadOutlined,
+  ColumnWidthOutlined,
 } from "@ant-design/icons";
 import { api } from "../api";
 import type { ColumnInfo, ExecuteResponse } from "../types";
@@ -88,6 +89,10 @@ interface FilterCond {
 type SortDir = "asc" | "desc" | null;
 
 let nextFilterId = 1;
+
+const DEFAULT_COLUMN_WIDTH = 160;
+const MIN_COLUMN_WIDTH = 90;
+const MAX_COLUMN_WIDTH = 360;
 
 // 判断列的数据类型是否可视为数值（或时间戳），用于决定字面量是否加引号
 function isNumericLike(dt: string | undefined): boolean {
@@ -305,6 +310,10 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
   const [sortColumn, setSortColumn] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>(null);
   const [filterOpen, setFilterOpen] = useState(false);
+  const [columnOrder, setColumnOrder] = useState<string[]>([]);
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
+  const resizeRef = useRef<{ name: string; startX: number; startWidth: number } | null>(null);
+  const draggedColumnRef = useRef<string | null>(null);
 
   // 工具：生成当前查询 SQL 的 WHERE + ORDER BY 后缀
   const buildSuffix = (
@@ -715,6 +724,59 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
 
   const result = data?.results?.[0];
 
+  useEffect(() => {
+    const names = result?.columns ?? [];
+    setColumnOrder((previous) => {
+      const existing = previous.filter((name) => names.includes(name));
+      const added = names.filter((name) => !existing.includes(name));
+      return [...existing, ...added];
+    });
+  }, [result?.columns]);
+
+  useEffect(() => {
+    const onMouseMove = (event: MouseEvent) => {
+      const resize = resizeRef.current;
+      if (!resize) return;
+      const width = Math.min(
+        MAX_COLUMN_WIDTH,
+        Math.max(MIN_COLUMN_WIDTH, resize.startWidth + event.clientX - resize.startX)
+      );
+      setColumnWidths((previous) => ({ ...previous, [resize.name]: width }));
+    };
+    const onMouseUp = () => {
+      resizeRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
+
+  const startColumnResize = (event: React.MouseEvent, name: string, width: number) => {
+    event.preventDefault();
+    event.stopPropagation();
+    resizeRef.current = { name, startX: event.clientX, startWidth: width };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
+
+  const moveColumn = (from: string, to: string) => {
+    if (!from || from === to) return;
+    setColumnOrder((previous) => {
+      const next = [...previous];
+      const fromIndex = next.indexOf(from);
+      const toIndex = next.indexOf(to);
+      if (fromIndex < 0 || toIndex < 0) return previous;
+      next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, from);
+      return next;
+    });
+  };
+
   // ===================== 选中行的导出 / 删除 =====================
   // 取出"被选中的真实行内容"，按当前结果集的列顺序展开
   const getSelectedRows = (): { columns: string[]; rows: any[][] } => {
@@ -1008,8 +1070,13 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
   );
 
   const tableColumns =
-    result?.columns?.map((name, i) => {
+    columnOrder.map((name) => {
+      const i = result?.columns?.indexOf(name) ?? -1;
+      if (i < 0 || !result?.columns) return null;
       const meta = columns.find((c) => c.name === name);
+      const width = columnWidths[name] ?? DEFAULT_COLUMN_WIDTH;
+      const typeLabel = meta?.data_type ?? result.types?.[i] ?? "";
+      const showType = width >= 130;
       const isSorted = sortColumn === name;
       const sortIcon =
         isSorted && sortDir === "asc" ? (
@@ -1022,25 +1089,95 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
       return {
         title: (
           <div
+            className="table-column-header"
+            draggable
             onClick={() => toggleSort(name)}
-            style={{ cursor: "pointer", userSelect: "none", display: "flex", gap: 4, alignItems: "center" }}
-            title="点击切换排序：升 / 降 / 无"
+            onDragStart={(event) => {
+              draggedColumnRef.current = name;
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData("text/plain", name);
+            }}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault();
+              moveColumn(draggedColumnRef.current ?? event.dataTransfer.getData("text/plain"), name);
+              draggedColumnRef.current = null;
+            }}
+            onDragEnd={() => {
+              draggedColumnRef.current = null;
+            }}
+            style={{
+              cursor: "grab",
+              userSelect: "none",
+              display: "flex",
+              gap: 4,
+              alignItems: "center",
+              minWidth: 0,
+              width: "100%",
+              position: "relative",
+              paddingRight: 8,
+            }}
           >
-            <strong>{name}</strong>
-            {meta?.is_primary && (
-              <Tag color="orange" style={{ margin: 0 }}>
-                PK
-              </Tag>
-            )}
-            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-              {meta?.data_type ?? result?.types?.[i] ?? ""}
-            </Typography.Text>
-            <span style={{ marginLeft: "auto" }}>{sortIcon}</span>
+            <Tooltip title={name} mouseEnterDelay={0.2}>
+              <span
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                  flex: 1,
+                  minWidth: 0,
+                }}
+              >
+                <strong
+                  style={{
+                    flex: "1 1 48px",
+                    minWidth: 24,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {name}
+                </strong>
+                {meta?.is_primary && (
+                  <Tag color="orange" style={{ margin: 0, flexShrink: 0 }}>
+                    PK
+                  </Tag>
+                )}
+                {showType && typeLabel && (
+                  <Typography.Text
+                    type="secondary"
+                    style={{
+                      flex: "0 1 52px",
+                      maxWidth: 52,
+                      minWidth: 0,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      fontSize: 11,
+                    }}
+                  >
+                    {typeLabel}
+                  </Typography.Text>
+                )}
+                <span style={{ flexShrink: 0 }}>{sortIcon}</span>
+              </span>
+            </Tooltip>
+            <span
+              className="table-column-resize-handle"
+              draggable={false}
+              onMouseDown={(event) => startColumnResize(event, name, width)}
+              onClick={(event) => event.stopPropagation()}
+              title="拖动调整列宽"
+            >
+              <ColumnWidthOutlined />
+            </span>
           </div>
         ),
         dataIndex: i,
         key: name + "_" + i,
-        ellipsis: editingCell?.col !== name,
+        width,
+        ellipsis: true,
         onCell: (record: any) => ({
           onDoubleClick: () => {
             if (canEdit && hasPK) startEdit(record.key, name, record[i]);
@@ -1086,9 +1223,13 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
           return <span style={cellStyle}>{cellToDisplayText(displayVal)}</span>;
         },
       };
-    }) ?? [];
+    }).filter((column): column is NonNullable<typeof column> => column !== null);
 
   const dataSource = (result?.rows ?? []).map((r, i) => ({ key: i, ...r }));
+  const tableScrollWidth = tableColumns.reduce(
+    (totalWidth, column) => totalWidth + Number(column.width ?? DEFAULT_COLUMN_WIDTH),
+    48
+  );
 
   // 筛选面板
   const filterPanel = (
@@ -1396,7 +1537,7 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
       )}
       {view === "data" && (
       <>
-      <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
+      <div className="table-data-grid" style={{ flex: 1, overflow: "auto", padding: 12 }}>
         <Table
           size="small"
           bordered
@@ -1426,7 +1567,8 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
               fetchPage(targetPage, nextPageSize, appliedFilters);
             },
           }}
-          scroll={{ x: "max-content" }}
+          tableLayout="fixed"
+          scroll={{ x: tableScrollWidth }}
         />
       </div>
       {canEdit && hasPK && dirtyCount > 0 && (

@@ -246,6 +246,37 @@ body.is-resizing * {
   background: #fff;
 }
 
+.table-data-grid .ant-table-container table {
+  table-layout: fixed !important;
+}
+
+.table-column-header {
+  overflow: visible;
+}
+
+.table-column-resize-handle {
+  position: absolute;
+  top: -8px;
+  right: -6px;
+  bottom: -8px;
+  width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: col-resize;
+  color: #1677ff;
+  background: #f5f9ff;
+  border-left: 1px solid #91caff;
+  opacity: 0;
+  z-index: 2;
+  transition: opacity 120ms ease;
+}
+
+.table-column-header:hover .table-column-resize-handle,
+.table-column-resize-handle:hover {
+  opacity: 1;
+}
+
 .sql-split-resizer {
   height: 6px;
   background: transparent;
