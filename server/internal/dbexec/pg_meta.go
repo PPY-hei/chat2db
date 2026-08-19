@@ -67,7 +67,7 @@ JOIN pg_namespace n ON n.oid = cls.relnamespace
 WHERE n.nspname = $1
 AND cls.relkind IN ('r','v','m','p')
 ORDER BY cls.relname`
-	res, err := Exec(ctx, c, q, schema)
+	res, err := pgExecAllRows(ctx, c, q, schema)
 	if err != nil {
 		return nil, err
 	}
@@ -185,8 +185,29 @@ ORDER BY i.relname, k.ord`
 	return out, nil
 }
 
-// pgGenerateTableDDL 生成 PG 表 DDL。
+// pgGenerateTableDDL 生成 PG 表/视图 DDL。
 func pgGenerateTableDDL(ctx context.Context, c *model.Connection, schema, table string) (string, error) {
+	// Views expose columns through pg_attribute just like tables, but those
+	// columns are not enough to reconstruct the object. Fetch the stored view
+	// definition first so the DDL can recreate the view itself.
+	objRes, err := Exec(ctx, c, `SELECT c.relkind::text, CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid, true) END
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = $1 AND c.relname = $2`, schema, table)
+	if err != nil {
+		return "", err
+	}
+	if len(objRes.Rows) > 0 && len(objRes.Rows[0]) > 0 {
+		relkind := asString(objRes.Rows[0][0])
+		if relkind == "v" || relkind == "m" {
+			definition := ""
+			if len(objRes.Rows[0]) > 1 {
+				definition = asString(objRes.Rows[0][1])
+			}
+			return pgRenderViewDDL(schema, table, relkind == "m", definition), nil
+		}
+	}
+
 	cols, err := pgListColumns(ctx, c, schema, table)
 	if err != nil {
 		return "", err
@@ -269,6 +290,24 @@ ORDER BY a.attnum`, schema, table)
 	}
 
 	return b.String(), nil
+}
+
+// pgRenderViewDDL renders the definition returned by pg_get_viewdef.
+// pg_get_viewdef(..., true) returns a complete SELECT body without a trailing
+// semicolon, so normalize it here before appending the statement terminator.
+func pgRenderViewDDL(schema, table string, materialized bool, definition string) string {
+	definition = strings.TrimSpace(definition)
+	definition = strings.TrimSpace(strings.TrimSuffix(definition, ";"))
+	kind := "VIEW"
+	if materialized {
+		kind = "MATERIALIZED VIEW"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "-- postgres %s: %q.%q\n", strings.ToLower(kind), schema, table)
+	fmt.Fprintf(&b, "CREATE %s %q.%q AS\n", kind, schema, table)
+	b.WriteString(definition)
+	b.WriteString(";\n")
+	return b.String()
 }
 
 // pgQuote 返回 PG 风格的单引号字符串字面量。

@@ -49,7 +49,7 @@ func hiveListTables(ctx context.Context, c *model.Connection, schema string) ([]
 		sql = "SHOW TABLES"
 	}
 
-	result, err := hiveExec(ctx, c, sql)
+	result, err := hiveExecAllRows(ctx, c, sql)
 	if err != nil {
 		return nil, err
 	}

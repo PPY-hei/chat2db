@@ -334,6 +334,15 @@ func hivePing(ctx context.Context, c *model.Connection) error {
 
 // hiveExec runs one SQL statement and returns a result.
 func hiveExec(ctx context.Context, c *model.Connection, sqlStr string, args ...any) (*QueryResult, error) {
+	return hiveExecWithRowLimit(ctx, c, config.Get().QueryMaxRows, sqlStr, args...)
+}
+
+// hiveExecAllRows is reserved for bounded metadata queries such as SHOW TABLES.
+func hiveExecAllRows(ctx context.Context, c *model.Connection, sqlStr string, args ...any) (*QueryResult, error) {
+	return hiveExecWithRowLimit(ctx, c, 0, sqlStr, args...)
+}
+
+func hiveExecWithRowLimit(ctx context.Context, c *model.Connection, rowLimit int, sqlStr string, args ...any) (*QueryResult, error) {
 	appCfg := config.Get()
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(appCfg.QueryTimeoutSec)*time.Second)
 	defer cancel()
@@ -393,10 +402,9 @@ func hiveExec(ctx context.Context, c *model.Connection, sqlStr string, args ...a
 		out.Columns = cols
 		out.Types = types
 
-		limit := appCfg.QueryMaxRows
 		count := 0
 		for cursor.HasMore(ctx) {
-			if count >= limit {
+			if rowLimit > 0 && count >= rowLimit {
 				out.Truncated = true
 				break
 			}

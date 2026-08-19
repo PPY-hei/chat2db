@@ -228,6 +228,16 @@ type QueryResult struct {
 
 // pgExec runs one SQL statement on PG and returns a result.
 func pgExec(ctx context.Context, c *model.Connection, sql string, args ...any) (*QueryResult, error) {
+	return pgExecWithRowLimit(ctx, c, config.Get().QueryMaxRows, sql, args...)
+}
+
+// pgExecAllRows is reserved for bounded metadata queries such as listing
+// tables. User SQL continues to use pgExec and QUERY_MAX_ROWS.
+func pgExecAllRows(ctx context.Context, c *model.Connection, sql string, args ...any) (*QueryResult, error) {
+	return pgExecWithRowLimit(ctx, c, 0, sql, args...)
+}
+
+func pgExecWithRowLimit(ctx context.Context, c *model.Connection, rowLimit int, sql string, args ...any) (*QueryResult, error) {
 	appCfg := config.Get()
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(appCfg.QueryTimeoutSec)*time.Second)
 	defer cancel()
@@ -252,10 +262,9 @@ func pgExec(ctx context.Context, c *model.Connection, sql string, args ...any) (
 			out.Columns[i] = string(f.Name)
 			out.Types[i] = pgTypeName(f.DataTypeOID)
 		}
-		limit := appCfg.QueryMaxRows
 		count := 0
 		for rows.Next() {
-			if count >= limit {
+			if rowLimit > 0 && count >= rowLimit {
 				out.Truncated = true
 				break
 			}

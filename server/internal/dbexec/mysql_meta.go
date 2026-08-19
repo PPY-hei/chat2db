@@ -52,7 +52,7 @@ ORDER BY TABLE_NAME`
 	if schema != "" {
 		dbName = schema
 	}
-	res, err := mysqlExec(ctx, c, q, dbName)
+	res, err := mysqlExecAllRows(ctx, c, q, dbName)
 	if err != nil {
 		return nil, err
 	}

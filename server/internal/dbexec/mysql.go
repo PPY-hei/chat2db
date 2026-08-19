@@ -203,6 +203,16 @@ func mysqlPing(ctx context.Context, c *model.Connection) error {
 
 // mysqlExec runs one SQL statement and returns a result.
 func mysqlExec(ctx context.Context, c *model.Connection, sqlStr string, args ...any) (*QueryResult, error) {
+	return mysqlExecWithRowLimit(ctx, c, config.Get().QueryMaxRows, sqlStr, args...)
+}
+
+// mysqlExecAllRows is reserved for bounded metadata queries such as listing
+// tables. User SQL continues to use mysqlExec and QUERY_MAX_ROWS.
+func mysqlExecAllRows(ctx context.Context, c *model.Connection, sqlStr string, args ...any) (*QueryResult, error) {
+	return mysqlExecWithRowLimit(ctx, c, 0, sqlStr, args...)
+}
+
+func mysqlExecWithRowLimit(ctx context.Context, c *model.Connection, rowLimit int, sqlStr string, args ...any) (*QueryResult, error) {
 	appCfg := config.Get()
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(appCfg.QueryTimeoutSec)*time.Second)
 	defer cancel()
@@ -254,10 +264,9 @@ func mysqlExec(ctx context.Context, c *model.Connection, sqlStr string, args ...
 			}
 		}
 
-		limit := appCfg.QueryMaxRows
 		count := 0
 		for rows.Next() {
-			if count >= limit {
+			if rowLimit > 0 && count >= rowLimit {
 				out.Truncated = true
 				break
 			}

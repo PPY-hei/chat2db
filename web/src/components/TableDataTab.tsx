@@ -1352,6 +1352,18 @@ export default function TableDataTab({ tab, onOpenSQL }: Props) {
               { label: "DDL", value: "ddl" },
             ]}
           />
+          {view === "ddl" && (
+            <Tooltip title="复制当前 DDL">
+              <Button
+                size="small"
+                icon={<CopyOutlined />}
+                disabled={ddlLoading || !ddl}
+                onClick={() => copyText(ddl, "已复制 DDL")}
+              >
+                复制 DDL
+              </Button>
+            </Tooltip>
+          )}
           {view === "data" && (
           <>
           <Button size="small" icon={<ReloadOutlined />} onClick={reload} loading={loading}>

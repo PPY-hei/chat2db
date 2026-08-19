@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
   App,
   Button,
   Dropdown,
   Empty,
+  Input,
   Modal,
   Space,
   Tree,
@@ -29,6 +30,7 @@ import {
   FileSearchOutlined,
   UserOutlined,
   CloudDownloadOutlined,
+  SearchOutlined,
 } from "@ant-design/icons";
 import type { DataNode } from "antd/es/tree";
 import { useNavigate } from "react-router-dom";
@@ -53,6 +55,12 @@ interface TreeKey {
   schema?: string;
   table?: string;
   kind?: string;
+}
+
+interface StickyTreeRow {
+  key: string;
+  type: "connection" | "database" | "schema";
+  label: string;
 }
 
 function encodeKey(k: TreeKey): string {
@@ -87,8 +95,14 @@ export default function MainLayout() {
   const [databasesMap, setDatabasesMap] = useState<Record<number, string[]>>({});
   const [schemasMap, setSchemasMap] = useState<Record<string, string[]>>({});
   const [tablesMap, setTablesMap] = useState<Record<string, TableInfo[]>>({});
+  const [tableSearch, setTableSearch] = useState("");
+  const deferredTableSearch = useDeferredValue(tableSearch.trim().toLocaleLowerCase());
   const [expanded, setExpanded] = useState<string[]>([]);
   const [loadingNode, setLoadingNode] = useState<string | null>(null);
+  const [stickyTreeRows, setStickyTreeRows] = useState<StickyTreeRow[]>([]);
+  const sidebarTreeScrollRef = useRef<HTMLDivElement | null>(null);
+  const stickyFrameRef = useRef<number | null>(null);
+  const [treeHeight, setTreeHeight] = useState(400);
 
   const SIDEBAR_WIDTH_KEY = "chat2db.sidebar.width";
   const SIDEBAR_MIN = 200;
@@ -175,49 +189,213 @@ export default function MainLayout() {
   };
 
   const treeData: DataNode[] = useMemo(() => {
-    return groups.map<DataNode>((g) => ({
-      key: encodeKey({ type: "group", groupID: g.id }),
-      title: g.name,
-      icon: <FolderFilled className="tree-icon-folder" />,
-      children: (groupConns[g.id] ?? []).map<DataNode>((c) => ({
-        key: encodeKey({ type: "connection", groupID: g.id, connID: c.id }),
-        title: c.name,
-        icon: <DatabaseOutlined style={{ color: "#2563eb" }} />,
-        children: (databasesMap[c.id] ?? []).map<DataNode>((db) => ({
-          key: encodeKey({ type: "database", groupID: g.id, connID: c.id, database: db }),
-          title: db,
-          icon: <DatabaseOutlined style={{ color: db === c.database ? "#16a34a" : "#6b7280" }} />,
-          children: (schemasMap[`${c.id}/${db}`] ?? []).map<DataNode>((s) => ({
-            key: encodeKey({ type: "schema", groupID: g.id, connID: c.id, database: db, schema: s }),
-            title: s,
-            icon: <PartitionOutlined className="tree-icon-schema" />,
-            children: (tablesMap[`${c.id}/${db}/${s}`] ?? []).map<DataNode>((t) => ({
-              key: encodeKey({
-                type: "table",
-                groupID: g.id,
-                connID: c.id,
-                database: db,
-                schema: s,
-                table: t.name,
-                kind: t.kind,
-              }),
-              title: t.name,
-              icon: t.kind === "table" ? <TableOutlined className="tree-icon-table" /> : <EyeOutlined className="tree-icon-view" />,
-              isLeaf: true,
-            })),
-          })),
-        })),
-      })),
-    }));
-  }, [groups, groupConns, databasesMap, schemasMap, tablesMap]);
+    const filter = deferredTableSearch;
+    return groups.flatMap<DataNode>((g) => {
+      const connections = (groupConns[g.id] ?? []).flatMap<DataNode>((c) => {
+        const databases = (databasesMap[c.id] ?? []).flatMap<DataNode>((db) => {
+          const schemas = (schemasMap[`${c.id}/${db}`] ?? []).flatMap<DataNode>((s) => {
+            const tables = (tablesMap[`${c.id}/${db}/${s}`] ?? [])
+              .filter((t) => !filter || t.name.toLocaleLowerCase().includes(filter))
+              .map<DataNode>((t) => ({
+                key: encodeKey({
+                  type: "table",
+                  groupID: g.id,
+                  connID: c.id,
+                  database: db,
+                  schema: s,
+                  table: t.name,
+                  kind: t.kind,
+                }),
+                title: t.name,
+                icon: t.kind === "table" ? <TableOutlined className="tree-icon-table" /> : <EyeOutlined className="tree-icon-view" />,
+                isLeaf: true,
+              }));
+            if (filter && tables.length === 0) return [];
+            return [{
+              key: encodeKey({ type: "schema", groupID: g.id, connID: c.id, database: db, schema: s }),
+              title: s,
+              icon: <PartitionOutlined className="tree-icon-schema" />,
+              children: tables,
+            }];
+          });
+          if (filter && schemas.length === 0) return [];
+          return [{
+            key: encodeKey({ type: "database", groupID: g.id, connID: c.id, database: db }),
+            title: db,
+            icon: <DatabaseOutlined style={{ color: db === c.database ? "#16a34a" : "#6b7280" }} />,
+            children: schemas,
+          }];
+        });
+        if (filter && databases.length === 0) return [];
+        return [{
+          key: encodeKey({ type: "connection", groupID: g.id, connID: c.id }),
+          title: c.name,
+          icon: <DatabaseOutlined style={{ color: "#2563eb" }} />,
+          children: databases,
+        }];
+      });
+      if (filter && connections.length === 0) return [];
+      return [{
+        key: encodeKey({ type: "group", groupID: g.id }),
+        title: g.name,
+        icon: <FolderFilled className="tree-icon-folder" />,
+        children: connections,
+      }];
+    });
+  }, [groups, groupConns, databasesMap, schemasMap, tablesMap, deferredTableSearch]);
+
+  useEffect(() => {
+    const element = sidebarTreeScrollRef.current;
+    if (!element) return;
+    const updateHeight = () => setTreeHeight(Math.max(100, Math.floor(element.clientHeight)));
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  const searchExpandedKeys = useMemo(() => {
+    if (!deferredTableSearch) return expanded;
+    const keys: React.Key[] = [];
+    const visit = (nodes: DataNode[]) => {
+      for (const node of nodes) {
+        if (node.children?.length) {
+          keys.push(node.key);
+          visit(node.children);
+        }
+      }
+    };
+    visit(treeData);
+    return keys;
+  }, [deferredTableSearch, expanded, treeData]);
+
+  const updateStickyTreeRows = useCallback(() => {
+    const scrollContainer = sidebarTreeScrollRef.current;
+    if (!scrollContainer) return;
+
+    const containerTop = scrollContainer.getBoundingClientRect().top;
+    const markerRows = Array.from(
+      scrollContainer.querySelectorAll<HTMLElement>("[data-tree-node-key]")
+    )
+      .map((marker) => {
+        const row = marker.closest<HTMLElement>(".ant-tree-treenode");
+        const encodedKey = marker.dataset.treeNodeKey;
+        if (!row || !encodedKey) return null;
+        try {
+          return {
+            key: encodedKey,
+            node: decodeKey(encodedKey),
+            top: row.getBoundingClientRect().top,
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter((item): item is { key: string; node: TreeKey; top: number } => item !== null)
+      .sort((a, b) => a.top - b.top);
+
+    const nodeAt = (top: number): TreeKey | null => {
+      let current: TreeKey | null = null;
+      for (const item of markerRows) {
+        if (item.top > top) break;
+        current = item.node;
+      }
+      return current;
+    };
+
+    const rowHeight = 28;
+    const connectionNode = nodeAt(containerTop + 1);
+    if (!connectionNode?.connID || !connectionNode.groupID) {
+      setStickyTreeRows((previous) => (previous.length === 0 ? previous : []));
+      return;
+    }
+
+    const connection = (groupConns[connectionNode.groupID] ?? []).find(
+      (item) => item.id === connectionNode.connID
+    );
+    const nextRows: StickyTreeRow[] = [
+      {
+        key: encodeKey({
+          type: "connection",
+          groupID: connectionNode.groupID,
+          connID: connectionNode.connID,
+        }),
+        type: "connection",
+        label: connection?.name ?? `连接 ${connectionNode.connID}`,
+      },
+    ];
+
+    const databaseNode = nodeAt(containerTop + rowHeight + 1);
+    if (
+      databaseNode?.connID === connectionNode.connID &&
+      databaseNode.database
+    ) {
+      nextRows.push({
+        key: encodeKey({
+          type: "database",
+          groupID: databaseNode.groupID,
+          connID: databaseNode.connID,
+          database: databaseNode.database,
+        }),
+        type: "database",
+        label: databaseNode.database,
+      });
+    }
+
+    const schemaNode = nodeAt(containerTop + rowHeight * 2 + 1);
+    if (
+      schemaNode?.connID === connectionNode.connID &&
+      schemaNode.database === databaseNode?.database &&
+      schemaNode.schema
+    ) {
+      nextRows.push({
+        key: encodeKey({
+          type: "schema",
+          groupID: schemaNode.groupID,
+          connID: schemaNode.connID,
+          database: schemaNode.database,
+          schema: schemaNode.schema,
+        }),
+        type: "schema",
+        label: schemaNode.schema,
+      });
+    }
+
+    setStickyTreeRows((previous) => {
+      const unchanged =
+        previous.length === nextRows.length &&
+        previous.every((item, index) => item.key === nextRows[index].key);
+      return unchanged ? previous : nextRows;
+    });
+  }, [groupConns]);
+
+  const scheduleStickyTreeUpdate = useCallback(() => {
+    if (stickyFrameRef.current !== null) return;
+    stickyFrameRef.current = window.requestAnimationFrame(() => {
+      stickyFrameRef.current = null;
+      updateStickyTreeRows();
+    });
+  }, [updateStickyTreeRows]);
+
+  useEffect(() => {
+    scheduleStickyTreeUpdate();
+    return () => {
+      if (stickyFrameRef.current !== null) {
+        window.cancelAnimationFrame(stickyFrameRef.current);
+        stickyFrameRef.current = null;
+      }
+    };
+  }, [treeData, expanded, sidebarWidth, scheduleStickyTreeUpdate]);
 
   const titleRender = useCallback((node: any) => {
     const k: TreeKey = JSON.parse(node.key);
     if (k.type === "group") {
       const g = groups.find((gg) => gg.id === k.groupID);
-      if (!g) return <span>{node.title}</span>;
+      if (!g) {
+        return <span className="tree-node-marker" data-tree-node-key={node.key}>{node.title}</span>;
+      }
       return (
-        <span className="tree-conn-line">
+        <span className="tree-conn-line tree-node-marker" data-tree-node-key={node.key}>
           <span>
             <Space size={6}>
               <strong>{g.name}</strong>
@@ -256,9 +434,11 @@ export default function MainLayout() {
     if (k.type === "connection") {
       const g = groups.find((gg) => gg.id === k.groupID);
       const c = (groupConns[k.groupID!] ?? []).find((cc) => cc.id === k.connID);
-      if (!g || !c) return <span>{node.title}</span>;
+      if (!g || !c) {
+        return <span className="tree-node-marker" data-tree-node-key={node.key}>{node.title}</span>;
+      }
       return (
-        <span className="tree-conn-line">
+        <span className="tree-conn-line tree-node-marker" data-tree-node-key={node.key}>
           <span style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
             <Space size={6}>
               <span>{c.name}</span>
@@ -325,7 +505,7 @@ export default function MainLayout() {
     }
     if (k.type === "table" && k.kind && k.kind !== "table") {
       return (
-        <span>
+        <span className="tree-node-marker" data-tree-node-key={node.key}>
           {node.title}{" "}
           <Typography.Text type="secondary" style={{ fontSize: 11 }}>
             ({k.kind})
@@ -333,7 +513,7 @@ export default function MainLayout() {
         </span>
       );
     }
-    return <span>{node.title}</span>;
+    return <span className="tree-node-marker" data-tree-node-key={node.key}>{node.title}</span>;
   }, [groups, groupConns]);
 
   const onLoadData = useCallback(async (node: any) => {
@@ -579,32 +759,70 @@ export default function MainLayout() {
               </Space>
             </div>
           </div>
+          <div className="sidebar-table-search">
+            <Input
+              size="small"
+              allowClear
+              prefix={<SearchOutlined />}
+              placeholder="搜索已加载的表或视图"
+              value={tableSearch}
+              onChange={(event) => setTableSearch(event.target.value)}
+            />
+          </div>
           <div className="sidebar-tree-wrapper">
-            {groups.length === 0 ? (
-              <Empty
-                description="还没有连接组"
-                imageStyle={{ height: 40 }}
-                style={{ marginTop: 24 }}
-              >
-                <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setGroupModal(true)}>
-                  新建第一个组
-                </Button>
-              </Empty>
-            ) : (
-              <Spin spinning={!!loadingNode} size="small">
-                <Tree
-                  showIcon
-                  virtual
-                  treeData={treeData}
-                  titleRender={titleRender}
-                  expandedKeys={expanded}
-                  onExpand={(keys) => setExpanded(keys as string[])}
-                  loadData={onLoadData}
-                  onSelect={onSelectNode}
-                  blockNode
-                />
-              </Spin>
+            {!deferredTableSearch && stickyTreeRows.length > 0 && (
+              <div className="sidebar-tree-sticky" aria-hidden="true">
+                {stickyTreeRows.map((item, index) => (
+                  <div
+                    key={item.key}
+                    className={`sidebar-tree-sticky-row sticky-${item.type}`}
+                    style={{ paddingLeft: 12 + index * 20 }}
+                  >
+                    {item.type === "schema" ? (
+                      <PartitionOutlined className="tree-icon-schema" />
+                    ) : (
+                      <DatabaseOutlined
+                        style={{ color: item.type === "connection" ? "#2563eb" : "#6b7280" }}
+                      />
+                    )}
+                    <span>{item.label}</span>
+                  </div>
+                ))}
+              </div>
             )}
+            <div
+              ref={sidebarTreeScrollRef}
+              className="sidebar-tree-scroll"
+              onScroll={scheduleStickyTreeUpdate}
+            >
+              {groups.length === 0 ? (
+                <Empty
+                  description="还没有连接组"
+                  imageStyle={{ height: 40 }}
+                  style={{ marginTop: 24 }}
+                >
+                  <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setGroupModal(true)}>
+                    新建第一个组
+                  </Button>
+                </Empty>
+              ) : (
+                <Spin spinning={!!loadingNode} size="small">
+                  <Tree
+                    showIcon
+                    virtual
+                    height={treeHeight}
+                    treeData={treeData}
+                    titleRender={titleRender}
+                    expandedKeys={searchExpandedKeys}
+                    onExpand={(keys) => setExpanded(keys as string[])}
+                    onScroll={scheduleStickyTreeUpdate}
+                    loadData={onLoadData}
+                    onSelect={onSelectNode}
+                    blockNode
+                  />
+                </Spin>
+              )}
+            </div>
           </div>
           <div
             className={`sidebar-resizer${resizing ? " resizing" : ""}`}
