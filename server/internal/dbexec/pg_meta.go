@@ -85,6 +85,32 @@ ORDER BY cls.relname`
 	return out, nil
 }
 
+func pgListTablesFiltered(ctx context.Context, c *model.Connection, schema, search string) ([]TableInfo, error) {
+	q := `SELECT n.nspname, cls.relname,
+  CASE cls.relkind WHEN 'r' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'matview' WHEN 'p' THEN 'table' ELSE cls.relkind::text END
+FROM pg_class cls
+JOIN pg_namespace n ON n.oid = cls.relnamespace
+WHERE n.nspname = $1
+  AND cls.relkind IN ('r','v','m','p')
+  AND cls.relname ILIKE '%' || $2 || '%'
+ORDER BY cls.relname`
+	res, err := pgExecAllRows(ctx, c, q, schema, search)
+	if err != nil {
+		return nil, err
+	}
+	return pgTableInfoRows(res.Rows), nil
+}
+
+func pgTableInfoRows(rows [][]any) []TableInfo {
+	out := make([]TableInfo, 0, len(rows))
+	for _, r := range rows {
+		if len(r) >= 3 {
+			out = append(out, TableInfo{Schema: asString(r[0]), Name: asString(r[1]), Kind: asString(r[2])})
+		}
+	}
+	return out
+}
+
 // pgListColumns returns columns for a specific table.
 func pgListColumns(ctx context.Context, c *model.Connection, schema, table string) ([]ColumnInfo, error) {
 	q := `SELECT a.attname,

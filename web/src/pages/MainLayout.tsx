@@ -102,6 +102,7 @@ export default function MainLayout() {
   const [stickyTreeRows, setStickyTreeRows] = useState<StickyTreeRow[]>([]);
   const sidebarTreeScrollRef = useRef<HTMLDivElement | null>(null);
   const stickyFrameRef = useRef<number | null>(null);
+  const tableSearchRequestRef = useRef(0);
   const [treeHeight, setTreeHeight] = useState(400);
 
   const SIDEBAR_WIDTH_KEY = "chat2db.sidebar.width";
@@ -188,6 +189,37 @@ export default function MainLayout() {
     setTablesMap((m) => ({ ...m, [`${connID}/${database}/${schema}`]: ts }));
   };
 
+  useEffect(() => {
+    const requestID = ++tableSearchRequestRef.current;
+    const timer = window.setTimeout(() => {
+      const entries = Object.keys(tablesMap).map((key) => {
+        const [connID, database, ...schemaParts] = key.split("/");
+        return { key, connID: Number(connID), database, schema: schemaParts.join("/") };
+      });
+      if (entries.length === 0) return;
+      Promise.all(
+        entries.map(async ({ key, connID, database, schema }) => ({
+          key,
+          tables: await api.listTables(connID, schema, database, deferredTableSearch),
+        }))
+      )
+        .then((results) => {
+          if (requestID !== tableSearchRequestRef.current) return;
+          setTablesMap((current) => {
+            const next = { ...current };
+            for (const result of results) next[result.key] = result.tables;
+            return next;
+          });
+        })
+        .catch(() => {
+          if (requestID === tableSearchRequestRef.current) message.error("表搜索失败");
+        });
+    }, 250);
+    return () => window.clearTimeout(timer);
+    // Search is intentionally scoped to schemas already loaded in the tree.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deferredTableSearch]);
+
   const treeData: DataNode[] = useMemo(() => {
     const filter = deferredTableSearch;
     return groups.flatMap<DataNode>((g) => {
@@ -253,21 +285,6 @@ export default function MainLayout() {
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-
-  const searchExpandedKeys = useMemo(() => {
-    if (!deferredTableSearch) return expanded;
-    const keys: React.Key[] = [];
-    const visit = (nodes: DataNode[]) => {
-      for (const node of nodes) {
-        if (node.children?.length) {
-          keys.push(node.key);
-          visit(node.children);
-        }
-      }
-    };
-    visit(treeData);
-    return keys;
-  }, [deferredTableSearch, expanded, treeData]);
 
   const updateStickyTreeRows = useCallback(() => {
     const scrollContainer = sidebarTreeScrollRef.current;
@@ -813,7 +830,7 @@ export default function MainLayout() {
                     height={treeHeight}
                     treeData={treeData}
                     titleRender={titleRender}
-                    expandedKeys={searchExpandedKeys}
+                    expandedKeys={expanded}
                     onExpand={(keys) => setExpanded(keys as string[])}
                     onScroll={scheduleStickyTreeUpdate}
                     loadData={onLoadData}

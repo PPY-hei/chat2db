@@ -3,6 +3,7 @@ package dbexec
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/chy/chat2db/server/internal/model"
 )
@@ -90,6 +91,38 @@ func ListTables(ctx context.Context, c *model.Connection, schema string) ([]Tabl
 		return nil, err
 	}
 	return d.ListTables(ctx, schema)
+}
+
+// ListTablesFiltered performs a server-side table-name filter when supported.
+// This keeps searches independent of the normal query row limit.
+func ListTablesFiltered(ctx context.Context, c *model.Connection, schema, search string) ([]TableInfo, error) {
+	d, err := Open(c)
+	if err != nil {
+		return nil, err
+	}
+	search = strings.TrimSpace(search)
+	if search == "" {
+		return d.ListTables(ctx, schema)
+	}
+	switch d.Name() {
+	case "postgres":
+		return pgListTablesFiltered(ctx, c, schema, search)
+	case "mysql":
+		return mysqlListTablesFiltered(ctx, c, schema, search)
+	default:
+		rows, err := d.ListTables(ctx, schema)
+		if err != nil {
+			return nil, err
+		}
+		needle := strings.ToLower(search)
+		out := rows[:0]
+		for _, row := range rows {
+			if strings.Contains(strings.ToLower(row.Name), needle) {
+				out = append(out, row)
+			}
+		}
+		return out, nil
+	}
 }
 
 // ListColumns returns columns for a specific table.

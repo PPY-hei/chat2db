@@ -70,6 +70,29 @@ ORDER BY TABLE_NAME`
 	return out, nil
 }
 
+func mysqlListTablesFiltered(ctx context.Context, c *model.Connection, schema, search string) ([]TableInfo, error) {
+	q := `SELECT TABLE_SCHEMA, TABLE_NAME,
+  CASE TABLE_TYPE WHEN 'BASE TABLE' THEN 'table' WHEN 'VIEW' THEN 'view' ELSE 'table' END AS kind
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = ? AND TABLE_NAME LIKE CONCAT('%', ?, '%')
+ORDER BY TABLE_NAME`
+	dbName := c.Database
+	if schema != "" {
+		dbName = schema
+	}
+	res, err := mysqlExecAllRows(ctx, c, q, dbName, search)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TableInfo, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		if len(r) >= 3 {
+			out = append(out, TableInfo{Schema: asString(r[0]), Name: asString(r[1]), Kind: asString(r[2])})
+		}
+	}
+	return out, nil
+}
+
 // mysqlListColumns returns columns for a specific table.
 func mysqlListColumns(ctx context.Context, c *model.Connection, schema, table string) ([]ColumnInfo, error) {
 	dbName := c.Database

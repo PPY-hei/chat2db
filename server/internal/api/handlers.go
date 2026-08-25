@@ -610,11 +610,12 @@ func ListTables(c *gin.Context) {
 		return
 	}
 	schema := c.Query("schema")
+	search := c.Query("search")
 	if schema == "" {
 		badRequest(c, errors.New("schema is required"))
 		return
 	}
-	rows, err := dbexec.ListTables(c.Request.Context(), conn, schema)
+	rows, err := dbexec.ListTablesFiltered(c.Request.Context(), conn, schema, search)
 	if err != nil {
 		internal(c, err)
 		return

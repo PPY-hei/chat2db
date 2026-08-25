@@ -117,10 +117,10 @@ export const api = {
         params: database ? { database } : {},
       })
       .then((r) => r.data),
-  listTables: (connID: number, schema: string, database?: string) =>
+  listTables: (connID: number, schema: string, database?: string, search?: string) =>
     http
       .get<TableInfo[]>(`/connections/${connID}/tables`, {
-        params: { schema, ...(database ? { database } : {}) },
+        params: { schema, ...(database ? { database } : {}), ...(search ? { search } : {}) },
       })
       .then((r) => r.data),
   listColumns: (connID: number, schema: string, table: string, database?: string) =>
